@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "custom")(type "KiCad")(uri "${KIPRJMOD}/custom_syms/custom.kicad_sym")(options "")(descr "EC25-EUX, SL2.1A, SMF05C"))
+  (lib (name "power_gen")(type "KiCad")(uri "${KIPRJMOD}/custom_syms/power_gen.kicad_sym")(options "")(descr "Net-named power symbols"))
+)

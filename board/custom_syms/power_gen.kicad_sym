@@ -1,0 +1,92 @@
+(kicad_symbol_lib
+  (version 20231120)
+  (generator "koppar")
+  (symbol "DVDD"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "DVDD" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "DVDD_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "DVDD_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "USIM_VDD"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "USIM_VDD" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "USIM_VDD_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "USIM_VDD_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "STATUS_3V3"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "STATUS_3V3" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "STATUS_3V3_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "STATUS_3V3_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "RI_3V3"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "RI_3V3" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "RI_3V3_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "RI_3V3_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "PCM_OUT_3V3"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "PCM_OUT_3V3" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "PCM_OUT_3V3_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "PCM_OUT_3V3_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "PCM_IN_3V3"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "PCM_IN_3V3" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "PCM_IN_3V3_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "PCM_IN_3V3_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "PCM_SYNC_3V3"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "PCM_SYNC_3V3" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "PCM_SYNC_3V3_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "PCM_SYNC_3V3_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "PCM_CLK_3V3"
+      (power) (pin_numbers hide) (pin_names (offset 0)) (in_bom yes) (on_board yes)
+      (property "Reference" "#PWR" (at 0 -3.81 0) (effects (font (size 1.27 1.27)) hide))
+      (property "Value" "PCM_CLK_3V3" (at 0 3.556 0) (effects (font (size 1.27 1.27))))
+      (symbol "PCM_CLK_3V3_0_1"
+        (polyline (pts (xy 0 0) (xy 0 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (polyline (pts (xy -1.016 1.524) (xy 0 2.54) (xy 1.016 1.524)) (stroke (width 0) (type default)) (fill (type none))))
+      (symbol "PCM_CLK_3V3_1_1"
+        (pin power_in line (at 0 0 90) (length 0)
+          (name "" (effects (font (size 1.27 1.27))))
+          (number "1" (effects (font (size 1.27 1.27)))))))
+)
