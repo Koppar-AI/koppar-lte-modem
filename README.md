@@ -10,6 +10,29 @@ or send a text.
 The board was designed by [Koppar](https://koppar.ai/?ref=gh-lte) from a one-page
 spec ([`spec.txt`](spec.txt)), then reviewed part by part against the datasheets.
 
+## Built and tested
+
+Rev B has been manufactured and assembled, and the assembled boards have been brought
+up on the bench.
+
+| Assembled boards and bare PCBs from the same batch | The back |
+|---|---|
+| ![Two assembled rev B boards and bare PCBs](images/built-boards.jpg) | ![The back of a rev B board](images/built-boards-back.jpg) |
+
+What has been tested on an assembled board ([all results](REVIEW.md#bring-up-results-2026-11-10-rev-b-ec25-not-yet-fitted)):
+
+- **Power:** 5 V in over USB-C, the 3.3 V rail, and the 3.8 V buck for the module (3.90 V with no load, inside the module's 3.3 to 4.3 V range).
+- **USB:** the on-board hub at 480 Mb/s, the RP2040 behind it, its flash and its 12 MHz crystal.
+- **The module's controls:** the PWRKEY and RESET_N transistors switch, and the NET, RING and CALL LEDs light.
+- **The firmware:** the RP2040 runs as a USB sound card on the computer. A test tone and a loopback come back at the expected level, the audio streams reopen reliably, and the firmware updates itself over USB.
+
+**Not yet tested: everything that needs the Quectel EC25-EUX.** The module has been
+ordered. Once it is fitted, the next results are the 1.8 V side, the SIM, the
+antennas, then the first call, text and data connection. They will be added here.
+
+The boards of this first order have no recovery pads on the back
+([see below](#bring-up-and-recovery)); the design files have them.
+
 ## What it does
 
 One USB-C cable, and the computer sees three ordinary devices through the on-board USB hub:
@@ -39,7 +62,8 @@ The [schematic](images/schematic.png) is also in [PDF](board/fab/schematic.pdf).
 | [`board/fab/`](board/fab) | Gerbers and drill files (`gerbers.zip`), IPC-2581, schematic PDF. |
 | [`board/fab/jlc/`](board/fab/jlc) | JLCPCB assembly BOM and placement files, with the part choices checked by hand. |
 | [`REVIEW.md`](REVIEW.md) | The design review: what passed, what changed and why, ordering notes, what is still open. |
-| [`firmware/`](firmware) | The RP2040 sound-card firmware (after bring-up). |
+| [`firmware/`](firmware) | RP2040 firmware: `bringup/` (board test) and `modem/` (USB sound card for calls, module power, LEDs). |
+| [`host/`](host) | `koppar-lte-modem`: command line, event daemon and Python API for the computer. |
 
 ## Build one
 
@@ -90,6 +114,11 @@ the back has three labelled pad groups for the rest:
 - **SWD (CLK, DIO, GND)**: a Pico Debug Probe or any CMSIS-DAP probe.
 - **USB_BOOT + 1V8**: short them while plugging in and the EC25 starts in emergency download mode, for a modem update that went wrong.
 
+Boards from the first rev B order were made from an earlier export and have none
+of these pads. To force the RP2040's bootloader on one, bridge pins 1 (CS) and 4
+(GND) of the flash, U6, while plugging in (a 1 kΩ resistor's legs, or tweezers),
+then let go.
+
 The modem does not switch itself on: the RP2040 drives its PWRKEY (GPIO22) and
 RESET_N (GPIO23). Until the firmware runs, the computer sees only the hub and the
 RP2040.
@@ -107,8 +136,9 @@ three are fixed here, along with the parts list and the assembly rotations.
 
 | | |
 |---|---|
-| Board | Rev B: 0 DRC errors, 0 unconnected, KiCad 10. Being ordered. |
-| Next | Once the boards are built: bring-up, AT commands, the sound-card firmware, the first call and text. |
+| Board | Rev B: 0 DRC errors, 0 unconnected, KiCad 10. Built; bring-up without the module passed ([results](REVIEW.md#bring-up-results-2026-11-10-rev-b-ec25-not-yet-fitted)). |
+| Firmware | USB sound card verified on the board (loopback, test tone, repeated stream open/close). Module control written, untested until the EC25 is fitted. |
+| Next | The EC25-EUX is on order. Then: `koppar-lte-modem setup`, the first call and text. |
 
 VoLTE is optional on the EC25-EUX. Where 2G and 3G are switched off, calls need a
 module firmware with VoLTE and a carrier that allows it; ask the seller.

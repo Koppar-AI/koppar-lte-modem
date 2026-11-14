@@ -50,7 +50,41 @@ Use `board/fab/jlc/BOM-JLCPCB.csv` and `CPL-JLCPCB.csv`. Every via is 0.45/0.2 m
 - **RP2040, debugging:** **SWD** CLK / DIO / GND take a Pico Debug Probe or any CMSIS-DAP probe (OpenOCD `target/rp2040.cfg`).
 - **EC25, a failed firmware update:** hold **USB_BOOT** shorted to **1V8** while plugging in, so the module powers up with it held (Quectel's note: short the test points to force download mode): it enters emergency download mode for Quectel's QFirehose / QFlash. Release once the download port appears.
 
+## Bring-up results (2026-11-10, rev B, EC25 not yet fitted)
+
+Firmware: [`firmware/bringup/`](firmware/bringup) (USB serial, single-key commands; `?` lists them).
+
+| Check | Result |
+|---|---|
+| USB-C in, SL2.1A hub | Enumerates as `1a40:0101` at 480 Mb/s; empty ports 3 and 4 show nothing |
+| RP2040 | Boots to `RPI-RP2` from blank flash, then runs the bring-up firmware |
+| W25Q16JV flash | JEDEC ID `ef 40 15`; boots in quad XIP (W25Q080 stage 2) |
+| 12 MHz crystal (RP2040) | Frequency counter: 12000 kHz |
+| +3V8 buck | 3.90 V with no load (target 3.80 V; EC25 VBAT range 3.3 to 4.3 V). Recheck under load once the module is fitted |
+| LEDs D2, D3, D5 | All three light (GPIO24 green, GPIO25 amber, GPIO26 blue, active high): placement polarity correct |
+| Q1 PWRKEY gate (GPIO22) | Gate 3.3 V on / 0 V off; drain to GND conducts on, open off |
+| Q2 RESET_N gate (GPIO23) | Gate 3.3 V on; drain to GND conducts on |
+
+Waiting on the module: +1V8 (VDD_EXT), the TXS0108E and the PCM, RI and STATUS lines, the RF path, the SIM.
+
+**Modem firmware (2026-11-11), no module.** macOS sees "Koppar LTE modem", 1 in / 1 out at 8 kHz, and
+the control port. Loopback: -12 dBFS in, -12.7 dBFS back; the firmware's test tone arrives at -12.0 dBFS;
+18 stream open/close cycles in a row with the board responsive after each. Built with Pico SDK 2.3.1 and
+TinyUSB 0.21.0: TinyUSB 0.18 (what SDK 2.1 to 2.3.1 ship) panics with "ep .. was already available" the
+second time a host opens an ISO stream on the RP2040, which froze the board.
+
+**The physical boards of the first order have no recovery pads** (BOOT, SWD, USB_BOOT): they were made
+from an export before the pads were added. Bridging U6 pin 1 (flash CS) to pin 4 (GND) while plugging in
+does what BOOT + GND does.
+
+**Firmware updates without the ROM bootloader.** After a warm reset the RP2040 sometimes failed to
+enumerate behind the on-board hub (erratum RP2040-E5: a missed bus reset). The ROM USB bootloader has no
+workaround, so firmware 0.2 updates itself over the control port, and enables the SDK's E5 fix (off by
+default) plus a re-attach if the host hasn't configured it after 3 s. Result: 22 updates in a row, each
+back on its own in 5 to 20 s.
+
 ## Still open
+
 
 - The SIM socket's card-detect switch is wired CSW to USIM_PRESENCE and DSW to GND; JAE's table has CSW (the ground frame) to ground and DSW to the detect pin. Harmless with the EC25's SIM hot-plug detection off (`AT+QSIMDET`, off by default); swap in the next revision.
 - The SL2.1A hub's unused ports 3 and 4 are pulled down but not strapped off: they may enumerate as empty ports.

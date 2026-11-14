@@ -1,0 +1,52 @@
+; EC25 PCM, primary mode (short frame sync), RP2040 as slave.
+;
+; From the EC25 hardware design (3.12): data is transmitted on the rising
+; edge of PCM_CLK and sampled on the falling edge; PCM_SYNC is one clock
+; wide and its falling edge marks the MSB. 16-bit linear, one slot.
+; Default clock: 2048 kHz with an 8 kHz sync (256 clocks per frame).
+;
+; PCM_CLK and PCM_SYNC are fixed by the board (GPIO16, GPIO17), so they are
+; waited on as absolute GPIOs.
+;   OUT pin base: GPIO18, PCM_IN  (uplink, to the module)
+;   IN  pin base: GPIO19, PCM_OUT (downlink, from the module)
+; OSR and ISR shift left (MSB first); no autopull, no autopush. The CPU
+; writes each uplink sample in the upper 16 bits of a TX FIFO word and reads
+; each downlink sample from the lower 16 bits of an RX FIFO word.
+
+.program pcm_slave
+
+.wrap_target
+    wait 1 gpio 17          ; PCM_SYNC pulse has started
+    mov x, null
+    pull noblock            ; next uplink sample; 0 (from x) if the CPU is late
+    wait 0 gpio 16          ; falling edge inside the sync pulse
+    wait 1 gpio 16          ; rising edge where SYNC falls: the MSB starts
+    set x, 15
+bitloop:
+    out pins, 1             ; launch our bit on the rising edge
+    wait 0 gpio 16          ; falling edge: sample the module's bit
+    in pins, 1
+    wait 1 gpio 16
+    jmp x-- bitloop
+    push noblock            ; one downlink sample per frame
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void pcm_slave_program_init(PIO pio, uint sm, uint offset, uint pin_out, uint pin_in) {
+    pio_sm_config c = pcm_slave_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pin_out, 1);
+    sm_config_set_in_pins(&c, pin_in);
+    sm_config_set_out_shift(&c, false, false, 32);   // left, no autopull
+    sm_config_set_in_shift(&c, false, false, 32);    // left, no autopush
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    pio_gpio_init(pio, pin_out);
+    pio_sm_set_pins_with_mask(pio, sm, 0, 1u << pin_out);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_out, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_in, 1, false);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
