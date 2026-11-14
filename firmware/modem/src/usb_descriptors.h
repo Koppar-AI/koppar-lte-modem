@@ -1,0 +1,50 @@
+// USB layout: a UAC2 mono headset (speaker = to the caller, microphone = from
+// the caller) plus a CDC control port.
+#pragma once
+
+#define UAC2_ENTITY_CLOCK               0x04
+#define UAC2_ENTITY_SPK_INPUT_TERMINAL  0x01   // USB streaming in
+#define UAC2_ENTITY_SPK_FEATURE_UNIT    0x02   // mute and volume
+#define UAC2_ENTITY_SPK_OUTPUT_TERMINAL 0x03   // to the phone line
+#define UAC2_ENTITY_MIC_INPUT_TERMINAL  0x11   // from the phone line
+#define UAC2_ENTITY_MIC_OUTPUT_TERMINAL 0x13   // USB streaming out
+
+enum {
+    ITF_NUM_AUDIO_CONTROL = 0,
+    ITF_NUM_AUDIO_STREAMING_SPK,
+    ITF_NUM_AUDIO_STREAMING_MIC,
+    ITF_NUM_CDC,
+    ITF_NUM_CDC_DATA,
+    ITF_NUM_TOTAL
+};
+
+#define EPNUM_AUDIO_OUT 0x01
+#define EPNUM_AUDIO_IN  0x81
+
+#define AUDIO_N_BYTES_PER_SAMPLE 2
+#define AUDIO_RESOLUTION         16
+#define AUDIO_EP_SZ              TUD_AUDIO_EP_SIZE(TUD_OPT_HIGH_SPEED, KOPPAR_SAMPLE_RATE, AUDIO_N_BYTES_PER_SAMPLE, 1)
+
+#define KOPPAR_AUDIO_DESC_LEN (TUD_AUDIO20_DESC_IAD_LEN \
+    + TUD_AUDIO20_DESC_STD_AC_LEN \
+    + TUD_AUDIO20_DESC_CS_AC_LEN \
+    + TUD_AUDIO20_DESC_CLK_SRC_LEN \
+    + TUD_AUDIO20_DESC_INPUT_TERM_LEN \
+    + TUD_AUDIO20_DESC_FEATURE_UNIT_LEN(1) \
+    + TUD_AUDIO20_DESC_OUTPUT_TERM_LEN \
+    + TUD_AUDIO20_DESC_INPUT_TERM_LEN \
+    + TUD_AUDIO20_DESC_OUTPUT_TERM_LEN \
+    /* Speaker AS interface: alt 0, alt 1 */ \
+    + TUD_AUDIO20_DESC_STD_AS_LEN \
+    + TUD_AUDIO20_DESC_STD_AS_LEN \
+    + TUD_AUDIO20_DESC_CS_AS_INT_LEN \
+    + TUD_AUDIO20_DESC_TYPE_I_FORMAT_LEN \
+    + TUD_AUDIO20_DESC_STD_AS_ISO_EP_LEN \
+    + TUD_AUDIO20_DESC_CS_AS_ISO_EP_LEN \
+    /* Microphone AS interface: alt 0, alt 1 */ \
+    + TUD_AUDIO20_DESC_STD_AS_LEN \
+    + TUD_AUDIO20_DESC_STD_AS_LEN \
+    + TUD_AUDIO20_DESC_CS_AS_INT_LEN \
+    + TUD_AUDIO20_DESC_TYPE_I_FORMAT_LEN \
+    + TUD_AUDIO20_DESC_STD_AS_ISO_EP_LEN \
+    + TUD_AUDIO20_DESC_CS_AS_ISO_EP_LEN)
