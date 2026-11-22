@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 audio = ["sounddevice>=0.4.6", "numpy>=1.24"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "numpy>=1.24"]
 
 [project.scripts]
 koppar-lte-modem = "koppar_lte_modem.cli:main"

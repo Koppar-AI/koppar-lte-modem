@@ -51,8 +51,11 @@ def _swap(digits: str) -> bytes:
 
 
 def deliver_pdu(sender: str, text: str, when: str = "261111093000", tz_quarters: int = 4,
-                concat: tuple[int, int, int] | None = None, ref16: bool = False) -> str:
-    """when: YYMMDDhhmmss. concat: (reference, total, part)."""
+                concat: tuple[int, int, int] | None = None, ref16: bool = False,
+                dcs: int | None = None, waiting: tuple[int, int] | None = None) -> str:
+    """when: YYMMDDhhmmss. concat: (reference, total, part). dcs: force the data coding
+    (message-waiting groups 0xC0-0xEF). waiting: (type octet, count) as a special SMS
+    message indication (IEI 0x01)."""
     if sender.startswith("+") or sender.isdigit():
         digits = sender.lstrip("+")
         oa = bytes([len(digits), 0x91 if sender.startswith("+") else 0x81]) + _swap(digits)
@@ -62,14 +65,16 @@ def deliver_pdu(sender: str, text: str, when: str = "261111093000", tz_quarters:
         oa = bytes([-(-len(sept) * 7 // 4), 0xD0]) + packed
     tz = abs(tz_quarters)
     scts = _swap(when) + bytes([((tz % 10) << 4) | (tz // 10) | (0x08 if tz_quarters < 0 else 0)])
-    udh = b""
+    ies = b""
     if concat:
         ref, total, part = concat
-        ie = bytes([0x08, 4, ref >> 8, ref & 0xFF, total, part]) if ref16 else bytes([0x00, 3, ref, total, part])
-        udh = bytes([len(ie)]) + ie
+        ies += bytes([0x08, 4, ref >> 8, ref & 0xFF, total, part]) if ref16 else bytes([0x00, 3, ref, total, part])
+    if waiting:
+        ies += bytes([0x01, 2, waiting[0], waiting[1]])
+    udh = bytes([len(ies)]) + ies if ies else b""
     septets = gsm7_septets(text)
     if septets is not None:
-        dcs = 0x00
+        dcs = 0x00 if dcs is None else dcs
         skip = -(-len(udh) * 8 // 7)
         bits = [(b >> k) & 1 for b in udh for k in range(8)]
         bits += [0] * (skip * 7 - len(bits)) + _septet_bits(septets)

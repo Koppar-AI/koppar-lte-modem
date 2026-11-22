@@ -1,4 +1,4 @@
-// Koppar LTE modem UI. Plain JS, no dependencies: talks to the daemon's
+// Koppar Phone. Plain JS, no dependencies: talks to the daemon's
 // /api on 127.0.0.1 and listens to its event stream. All text from the
 // network (names, messages) goes into the page as text nodes, never HTML.
 "use strict";
@@ -74,6 +74,9 @@ const ICONS = {
   min: "M6 12h12",
   del: "M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1zM12 9l6 6M18 9l-6 6",
   user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0",
+  vm: "M6.5 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM17.5 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM6.5 15.5h11",
+  play: "M8 5v14l11-7z",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
 };
 function icon(name) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -147,6 +150,10 @@ function describe(ev) {
     case "modem_disconnected": return "Modem left USB";
     case "ussd": return `USSD (${d.status}): ${d.text}`;
     case "ussd_sent": return `USSD sent: ${d.code}`;
+    case "voicemail": return `Voicemail from ${nameOf(d.number)} (${Math.round(d.seconds)} s)`;
+    case "voicemail_answered": return `Voicemail took the call from ${nameOf(d.number)}`;
+    case "voicemail_failed": return `Voicemail failed: ${d.error}`;
+    case "voicemail_waiting": return d.active ? `Operator voicemail: ${d.count ? d.count + " new" : "new messages"}` : "Operator voicemail: no new messages";
     case "board_error": return `Board: ${d.message}`;
     default: return ev.event;
   }
@@ -158,11 +165,11 @@ const S = {
   view: "overview", state: null, live: false, contacts: {}, threads: [], sel: null, convo: [],
   events: [], evKind: "", evQuery: "", evSel: null, atlog: [], showPoll: false, history: [], histPos: -1,
   signal: [], hours: 6, metric: "rsrp", cell: null, scan: null, ussd: [], device: null, settings: null,
-  scheduled: [], calls: [], dial: "", callStart: null, callMin: false, keypad: false, starred: false,
+  scheduled: [], calls: [], voicemails: [], dial: "", callStart: null, callMin: false, keypad: false, starred: false,
   query: "", draft: "", scheduleOn: false,
 };
 const VIEWS = [
-  ["overview", "Overview", "home"], ["messages", "Messages", "msg"], ["calls", "Calls", "phone"],
+  ["overview", "Overview", "home"], ["messages", "Messages", "msg"], ["calls", "Calls", "phone"], ["voicemail", "Voicemail", "vm"],
   ["events", "Events", "list"], ["console", "Console", "term"], ["network", "Network", "signal"],
   ["automations", "Automations", "bolt"], ["device", "Device", "chip"],
 ];
@@ -175,7 +182,8 @@ function renderNav() {
   nav.replaceChildren(...VIEWS.map(([id, label, ic]) => h("button", {
     "aria-current": S.view === id ? "page" : null, onclick: () => go(id), title: label,
   }, icon(ic), h("span", { class: "label", text: label }),
-     id === "messages" && unread ? h("span", { class: "badge", text: unread }) : null)));
+     id === "messages" && unread ? h("span", { class: "badge", text: unread }) : null,
+     id === "voicemail" && S.state && S.state.voicemail_new ? h("span", { class: "badge", text: S.state.voicemail_new }) : null)));
   document.getElementById("side-foot").replaceChildren(
     h("div", {}, h("span", { class: "dot " + (S.live ? "good" : "bad") }), " ", S.live ? "Live" : "Reconnecting…"));
 }
@@ -214,9 +222,10 @@ async function load(view) {
     if (view === "overview") { [S.signal] = await Promise.all([GET("/api/signal?hours=6")]); if (!S.events.length) S.events = await GET("/api/events?limit=200"); }
     if (view === "messages") { await loadThreads(); if (S.sel && S.sel !== "__new") S.convo = await GET("/api/messages?number=" + encodeURIComponent(S.sel)); if (S.starred) S.convo = await GET("/api/messages?starred=1"); }
     if (view === "calls") S.calls = await GET("/api/calls");
+    if (view === "voicemail") { S.voicemails = await GET("/api/voicemail"); S.settings = await GET("/api/settings"); }
     if (view === "events") S.events = await GET("/api/events?limit=300" + (S.evKind ? "&kind=" + S.evKind : ""));
     if (view === "console") S.atlog = await GET("/api/atlog" + (S.showPoll ? "?poll=1" : ""));
-    if (view === "network") { S.signal = await GET("/api/signal?hours=" + S.hours); if (!S.ussd.length) S.ussd = (await GET("/api/events?kind=ussd&limit=20")); }
+    if (view === "network") { S.signal = await GET("/api/signal?hours=" + S.hours); S.scan = await GET("/api/scan"); if (!S.ussd.length) S.ussd = (await GET("/api/events?kind=ussd&limit=20")); }
     if (view === "automations") { S.settings = await GET("/api/settings"); S.scheduled = await GET("/api/scheduled"); }
     if (view === "device") S.device = await GET("/api/device");
   } catch (e) { if (!(e instanceof ApiError && e.message === "not authorised")) toast(e.message, true); }
@@ -228,7 +237,7 @@ async function refreshState() {
   const call = currentCall();
   if (call && call.state === "active" && !S.callStart) S.callStart = Date.now();
   if (!call) { S.callStart = null; S.callMin = false; S.keypad = false; }
-  renderTop(); renderCall();
+  renderNav(); renderTop(); renderCall();
   if (S.view === "overview") renderView();
 }
 
@@ -237,7 +246,7 @@ async function refreshState() {
 function renderAll() { renderNav(); renderTop(); renderView(); renderCall(); }
 function renderView() {
   const v = document.getElementById("view");
-  const fn = { overview, messages, calls, events, console: consoleView, network, automations, device }[S.view];
+  const fn = { overview, messages, calls, voicemail, events, console: consoleView, network, automations, device }[S.view];
   v.classList.toggle("flush", S.view === "messages");
   const keep = v.querySelector("[data-keep-scroll]");
   const top = keep ? keep.scrollTop : 0;
@@ -462,7 +471,8 @@ function calls() {
               h("td", { class: "muted", text: fmtTime(c.started, true) }),
               h("td", { class: missed ? "muted" : "", text: len }),
               h("td", {}, h("div", { class: "row" },
-                c.recording ? h("span", { class: "tag", title: c.recording, text: "● recorded" }) : null,
+                c.recording ? h("audio", { class: "player", controls: true, preload: "none", title: "Recording of this call",
+                  src: `/api/calls/${c.id}/recording?token=${encodeURIComponent(TOKEN)}` }) : null,
                 c.number ? h("button", { class: "btn sm ghost", onclick: () => dial(c.number), title: "Call back" }, icon("phone")) : null,
                 c.number ? h("button", { class: "btn sm ghost", onclick: () => go("messages", c.number), title: "Text" }, icon("msg")) : null)));
           }))) : h("div", { class: "empty", text: "No calls yet." }))));
@@ -483,6 +493,7 @@ function currentCall() {
   return null;
 }
 function callLabel(c) {
+  if (S.state && S.state.voicemail_busy) return "Voicemail is recording a message";
   if (c.state === "active") return S.callStart ? fmtDur((Date.now() - S.callStart) / 1000) : "in call";
   return { incoming: "Incoming call", waiting: "Call waiting", dialing: "Calling…", alerting: "Ringing…", held: "On hold" }[c.state] || c.state;
 }
@@ -541,6 +552,60 @@ function renderCall() {
   layer.replaceChildren(card);
 }
 setInterval(() => { const el = document.getElementById("call-state"); const c = currentCall(); if (el && c) el.textContent = callLabel(c); }, 1000);
+
+// ---- voicemail ---------------------------------------------------------------
+
+function voicemail() {
+  const st = S.state || {}, s = S.settings;
+  if (!s) return h("div", { class: "empty", text: "Loading…" });
+  const vm = s.voicemail || {};
+  const op = st.voicemail_waiting;
+  const save = async v => { const r = await act(() => POST("/api/settings", { voicemail: { ...vm, ...v } }), "Saved"); if (r) { S.settings = r; renderView(); } };
+  const greetText = h("textarea", { class: "input", rows: "3", value: vm.greeting_text || "", "aria-label": "Greeting" });
+  const after = h("input", { class: "input", type: "number", min: "5", max: "60", value: vm.answer_after ?? 15, style: { width: "110px" }, "aria-label": "Answer after seconds" });
+  const maxLen = h("input", { class: "input", type: "number", min: "15", max: "600", value: vm.max_seconds ?? 120, style: { width: "110px" }, "aria-label": "Longest message in seconds" });
+  const opNumber = h("input", { class: "input", value: s.voicemail_number || "", placeholder: st.voicemail_number || "found from call forwarding", inputmode: "tel", "aria-label": "Operator voicemail number" });
+  const greetPlayer = h("audio", { class: "player", controls: true, preload: "none", src: `/api/voicemail/greeting?token=${encodeURIComponent(TOKEN)}&v=${Date.now()}` });
+  return h("div", {},
+    h("h1", { text: "Voicemail" }),
+    h("p", { class: "lede", text: "Messages people leave you: on this Mac, or with your operator when the Mac or the board is off." }),
+    h("div", { class: "grid", style: { gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)", alignItems: "start" } },
+      h("section", { class: "card", style: { padding: "0", overflow: "hidden" } },
+        h("div", { style: { padding: "14px 16px 8px" } }, h("h2", { text: "On this Mac" })),
+        S.voicemails.length ? h("table", { class: "t" }, h("tbody", {}, S.voicemails.map(v => h("tr", { class: v.heard ? "" : "unheard" },
+          h("td", {}, h("div", { class: "row" }, v.heard ? null : h("span", { class: "dot new", title: "new" }), h("strong", { text: v.name || v.number || "Unknown number" })),
+            v.name ? h("div", { class: "faint small mono", text: v.number }) : null,
+            h("div", { class: "faint small", text: `${fmtTime(v.time, true)} · ${Math.round(v.seconds)} s` })),
+          h("td", {}, h("audio", { class: "player", controls: true, preload: "none", src: `/api/voicemail/${v.id}/audio?token=${encodeURIComponent(TOKEN)}`,
+            onplay: () => { if (!v.heard) { v.heard = 1; setTimeout(refreshState, 500); } } })),
+          h("td", {}, h("div", { class: "row" },
+            v.number && /^\+?\d{3,}$/.test(v.number) ? h("button", { class: "btn sm ghost", title: "Call back", onclick: () => dial(v.number) }, icon("phone")) : null,
+            v.number && /^\+?\d{3,}$/.test(v.number) ? h("button", { class: "btn sm ghost", title: "Text", onclick: () => go("messages", v.number) }, icon("msg")) : null,
+            h("button", { class: "btn sm ghost", title: "Delete", onclick: async () => { if (confirm("Delete this voicemail?")) { await act(() => DEL(`/api/voicemail/${v.id}`)); await load("voicemail"); renderAll(); } } }, icon("trash"))))))))
+          : h("div", { class: "empty", text: vm.enabled ? "No messages yet." : "Switch on voicemail on the right, and missed calls leave their messages here." })),
+      h("div", { class: "stack" },
+        h("section", { class: "card stack" }, h("h2", { text: "Voicemail on this Mac" }),
+          h("label", { class: "switch" }, h("input", { type: "checkbox", checked: vm.enabled, onchange: e => save({ enabled: e.target.checked }) }), "Answer calls I don't pick up, and record a message"),
+          h("div", { class: "row wrap", style: { alignItems: "flex-end" } },
+            h("label", { class: "field" }, "Answer after (s)", after),
+            h("label", { class: "field" }, "Longest message (s)", maxLen),
+            h("button", { class: "btn sm", onclick: () => save({ answer_after: Number(after.value) || 15, max_seconds: Number(maxLen.value) || 120 }) }, "Save")),
+          h("p", { class: "faint small", text: "Your operator takes unanswered calls after about 20 seconds: answer before that. When the Mac or the board is off, the operator's voicemail still takes them." })),
+        h("section", { class: "card stack" }, h("h2", { text: "Greeting" }),
+          greetText,
+          h("div", { class: "row wrap" },
+            h("button", { class: "btn sm primary", onclick: async () => { if (await act(() => POST("/api/voicemail/greeting", { text: greetText.value }), "Greeting saved")) { S.settings = await GET("/api/settings"); renderView(); } } }, "Use this text"),
+            h("button", { class: "btn sm", onclick: async () => { toast("Recording for 8 seconds: speak now"); if (await act(() => POST("/api/voicemail/greeting/record", { seconds: 8 }), "Greeting recorded")) { S.settings = await GET("/api/settings"); renderView(); } } }, icon("mic"), "Record my own (8 s)")),
+          h("div", { class: "faint small", text: vm.greeting === "recorded" ? "Using your recorded greeting." : "Using the text above, spoken by the Mac." }),
+          greetPlayer),
+        h("section", { class: "card stack" }, h("h2", { text: "Operator voicemail" }),
+          h("div", { class: "row" }, h("span", { class: "dot " + (op && op.active ? "warn" : "good") }),
+            h("span", { text: !op ? "No message-waiting signal received yet" : op.active ? `New messages${op.count ? ` (${op.count})` : ""}` : "No new messages" }),
+            op ? h("span", { class: "faint small", text: "· " + fmtTime(op.time, true) }) : null),
+          h("button", { class: "btn", disabled: !st.voicemail_number, onclick: () => act(() => POST("/api/voicemail/call"), r => `Calling ${r.number}`).then(() => setTimeout(refreshState, 600)) }, icon("phone"), "Listen (call voicemail)"),
+          h("label", { class: "field" }, "Voicemail number", h("div", { class: "row" }, opNumber,
+            h("button", { class: "btn sm", onclick: async () => { const r = await act(() => POST("/api/settings", { voicemail_number: opNumber.value.replace(/[\s.()-]/g, "") }), "Saved"); if (r) { S.settings = r; await refreshState(); renderView(); } } }, "Save")))))));
+}
 
 // ---- events ------------------------------------------------------------------
 
@@ -649,21 +714,52 @@ function network() {
         h("div", { class: "row" }, ussdIn, h("button", { class: "btn primary", onclick: () => ussd(ussdIn.value) }, "Send")),
         h("ul", { class: "feed", style: { marginTop: "10px" } }, S.ussd.map(e => h("li", {}, h("span", { class: "when", text: fmtTime(e.time) }),
           h("span", { class: "grow", style: { whiteSpace: "pre-wrap" }, text: (e.data || e).text ?? "" }))))),
-      h("section", { class: "card" },
-        h("h2", { text: "Operators in range" }),
-        h("p", { class: "muted small", text: "A full scan takes up to 3 minutes, and the modem can't do anything else meanwhile (calls and texts wait)." }),
-        h("button", { class: "btn", onclick: scan }, S.scan === "busy" ? "Scanning…" : "Scan now"),
-        Array.isArray(S.scan) ? h("table", { class: "t", style: { marginTop: "10px" } },
-          h("thead", {}, h("tr", {}, ["Operator", "PLMN", "Radio", "Status"].map(t => h("th", { text: t })))),
-          h("tbody", {}, S.scan.map(o => h("tr", {}, h("td", { text: o.name }), h("td", { class: "mono", text: o.plmn }), h("td", { text: o.tech }),
-            h("td", {}, h("span", { class: "tag" + (o.status === "current" ? " ui" : o.status === "forbidden" ? " err" : ""), text: o.status })))))) : null)));
+      scanCard()));
 }
 async function loadCell() { const r = await act(() => GET("/api/cell")); if (r) { S.cell = r; renderView(); } }
+const SCAN_EXPECTED = 180;
+function scanCard() {
+  const sc = S.scan || { state: "idle" };
+  const running = sc.state === "running";
+  const took = sc.finished && sc.started ? fmtDur(sc.finished - sc.started) : null;
+  const heard = sc.cells || [];
+  return h("section", { class: "card stack" },
+    h("div", { class: "spread" }, h("h2", { text: "Operators in range" }),
+      running ? null : h("button", { class: "btn sm" + (sc.state === "idle" ? " primary" : ""), onclick: scan }, sc.state === "idle" ? "Scan now" : "Scan again")),
+    running ? h("div", { class: "stack" },
+      h("div", { class: "row" }, h("span", { class: "spinner", "aria-hidden": "true" }),
+        h("strong", { text: "Scanning" }), h("span", { class: "muted", id: "scan-elapsed", text: scanElapsed(sc) })),
+      h("div", { class: "progress", role: "progressbar", "aria-label": "Scan progress" }, h("i", { id: "scan-bar", style: { width: scanPct(sc) + "%" } })),
+      h("p", { class: "faint small", text: "The modem reports operators only when the scan ends (up to 3 minutes). Calls and texts wait until then." }))
+      : sc.state === "failed" ? h("p", { class: "small", style: { color: "var(--bad)" }, text: `The scan failed: ${sc.error}` })
+      : sc.state === "idle" ? h("p", { class: "muted small", text: "Lists every network the modem can find, yours included. It takes up to 3 minutes, and calls and texts wait meanwhile." })
+      : null,
+    Array.isArray(sc.operators) ? h("div", {},
+      sc.operators.length ? h("table", { class: "t" },
+        h("thead", {}, h("tr", {}, ["Operator", "PLMN", "Radio", "Status"].map(t => h("th", { text: t })))),
+        h("tbody", {}, sc.operators.map(o => h("tr", {}, h("td", { text: o.name }), h("td", { class: "mono", text: o.plmn }), h("td", { text: o.tech }),
+          h("td", {}, h("span", { class: "tag" + (o.status === "current" ? " ui" : o.status === "forbidden" ? " err" : ""), text: o.status }))))))
+        : h("div", { class: "faint small", text: "No operators found." }),
+      took ? h("div", { class: "faint small", style: { marginTop: "6px" }, text: `Scanned in ${took}, at ${fmtTime(new Date(sc.finished * 1000).toISOString())}` }) : null) : null,
+    running || heard.length ? h("div", {},
+      h("div", { class: "small muted", style: { margin: "4px 0" }, text: "Cells the modem hears right now" }),
+      heard.length ? h("table", { class: "t mono small" },
+        h("thead", {}, h("tr", {}, ["Radio", "Channel", "Cell", "Signal"].map(t => h("th", { text: t })))),
+        h("tbody", {}, heard.map(n => h("tr", {}, h("td", { text: n.rat || "" }), h("td", { text: n.earfcn || n.uarfcn || "" }),
+          h("td", { text: n.pci || n.psc || "" }), h("td", { text: n.rsrp ? `${n.rsrp} dBm` : n.rscp ? `${n.rscp} dBm` : "" })))))
+        : h("div", { class: "faint small", text: "None heard." })) : null);
+}
+function scanElapsed(sc) { return sc.started ? `${fmtDur(Date.now() / 1000 - sc.started)} of up to 3:00` : ""; }
+function scanPct(sc) { return sc.started ? Math.min(95, (Date.now() / 1000 - sc.started) / SCAN_EXPECTED * 100) : 0; }
+setInterval(() => {
+  if (!S.scan || S.scan.state !== "running") return;
+  const t = document.getElementById("scan-elapsed"), b = document.getElementById("scan-bar");
+  if (t) t.textContent = scanElapsed(S.scan);
+  if (b) b.style.width = scanPct(S.scan) + "%";
+}, 1000);
 async function scan() {
-  if (S.scan === "busy" || !confirm("Scan for operators? It takes up to 3 minutes and blocks the modem meanwhile.")) return;
-  S.scan = "busy"; renderView();
   const r = await act(() => POST("/api/scan"));
-  S.scan = r || null; renderView();
+  if (r) { S.scan = r; renderView(); }
 }
 async function ussd(code) { code = (code || "").trim(); if (code) await act(() => POST("/api/ussd", { code }), "Sent; waiting for the network's answer"); }
 
@@ -762,7 +858,7 @@ function connect() {
 }
 function notifyDesktop(title, body) {
   // Only if the browser already allows it: this page never asks. The daemon
-  // (or the Koppar menu-bar app) does the notifying.
+  // (or the Koppar Phone app) does the notifying.
   if (EMBEDDED || !("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
   try { new Notification(title, { body, tag: title }); } catch (e) { /* ignore */ }
 }
@@ -776,6 +872,9 @@ async function onEvent(ev) {
       await loadThreads();
       if (S.view === "messages" && S.sel === ev.number) S.convo = await GET("/api/messages?number=" + encodeURIComponent(ev.number));
       renderNav(); if (S.view === "messages") renderView();
+    } else if (ev.event === "scan") { const { event, ui, ...st } = ev; S.scan = st; if (S.view === "network") renderView();
+      if (st.state === "done") toast(`Scan done: ${st.operators.length} operator${st.operators.length === 1 ? "" : "s"}`);
+    } else if (ev.event === "voicemail_heard") { await refreshState(); renderNav(); if (S.view === "voicemail") { S.voicemails = await GET("/api/voicemail"); renderView(); }
     } else if (ev.event === "read") { await loadThreads(); renderNav(); if (S.view === "messages") renderView();
     } else if (ev.event === "bridge") { if (ev.error) toast("Mac audio: " + ev.error, true); refreshState(); }
     return;
@@ -784,6 +883,8 @@ async function onEvent(ev) {
   if (S.events.length > 1000) S.events.length = 1000;
   if (["ring", "incoming_call", "call_state", "call_ended", "call_audio", "ready", "module_on", "module_off", "network", "modem_disconnected"].includes(ev.event)) refreshState();
   if (ev.event === "incoming_call") { S.callMin = false; notifyDesktop("Incoming call", nameOf(ev.number)); }
+  if (ev.event === "voicemail") { toast(`New voicemail from ${nameOf(ev.number)}`); await refreshState(); renderNav(); if (S.view === "voicemail") { S.voicemails = await GET("/api/voicemail"); renderView(); } }
+  if (ev.event === "voicemail_waiting" && ev.active) toast("Your operator's voicemail has new messages");
   if (ev.event === "ussd") { S.ussd.unshift({ time: ev.time, data: ev }); toast("USSD: " + ev.text); }
   if (ev.event === "sms_sent" && S.view === "messages") { await loadThreads(); renderView(); }
   if (S.view === "events" && (!S.evKind || S.evKind === ev.event)) renderView();

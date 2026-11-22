@@ -12,7 +12,7 @@
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
-    <key>NSHumanReadableCopyright</key><string>Koppar Phone, for the Koppar LTE modem. CERN-OHL-P-2.0.</string>
+    <key>NSHumanReadableCopyright</key><string>Koppar Phone. CERN-OHL-P-2.0.</string>
     <key>NSMicrophoneUsageDescription</key><string>Koppar Phone puts your voice on phone calls when you answer with the Mac's audio.</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>

@@ -164,6 +164,23 @@ class CallAudio:
             got += len(blk)
         return np.concatenate(parts)[:need]
 
+    def record_until(self, stop: threading.Event, max_seconds: float):
+        """What the caller says until `stop` is set or `max_seconds` pass (voicemail)."""
+        import numpy as np
+
+        while not self._rx.empty():
+            self._rx.get_nowait()
+        need = int(max_seconds * self.rate)
+        parts, got = [], 0
+        while got < need and not stop.is_set():
+            try:
+                blk = self._rx.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            parts.append(blk)
+            got += len(blk)
+        return np.concatenate(parts)[:need] if parts else np.zeros(0, np.float32)
+
 
 def play_file(path: str) -> None:
     sd = _sd()

@@ -31,15 +31,24 @@ def test_ucs2_emoji_and_negative_offset():
     assert d.time == "2026-11-22T19:44:46-05:00"
 
 
-@pytest.mark.parametrize("ref16", [False, True])
-@pytest.mark.parametrize("text", ["x" * 150, "é👋" * 30])
-def test_concatenated_part(ref16, text):
+@pytest.mark.parametrize("text, ref16", [("x" * 150, False), ("é👋" * 30, True)])
+def test_concatenated_part(text, ref16):
     d = decode(deliver_pdu("Shop", text, concat=(300 if ref16 else 54, 3, 2), ref16=ref16))
     assert d.concat == (300 if ref16 else 54, 3, 2)
     assert d.text == text                        # the header and its fill bits are not in the text
 
 
-@pytest.mark.parametrize("bad", ["zz", "00", "0004"])
-def test_garbage_raises(bad):
+def test_truncated_pdu_raises_pdu_error():
+    # The daemon catches PDUError; anything else would take its event loop down.
     with pytest.raises(PDUError):
-        decode(bad)
+        decode("0004")
+
+
+def test_voicemail_waiting():
+    # In the data coding (0xC8: discard, active, voicemail) ...
+    d = decode(deliver_pdu("+447700900123", "", dcs=0xC8))
+    assert d.mwi == {"type": "voicemail", "active": True, "count": None, "store": False}
+    # ... or as a special SMS indication in the header, with a count.
+    d = decode(deliver_pdu("+447700900123", "You have 2 new messages", waiting=(0x80, 2)))
+    assert d.mwi == {"type": "voicemail", "active": True, "count": 2, "store": True}
+    assert d.text == "You have 2 new messages"

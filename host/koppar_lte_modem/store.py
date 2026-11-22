@@ -23,6 +23,11 @@ DEFAULT_SETTINGS = {
     "auto_reply": {"enabled": False, "text": "I can't talk right now; I'll get back to you.", "hours": 6},
     "forward_sms_to": "",            # a number: every text received is forwarded there
     "webhook_url": "",               # every event is POSTed there as JSON
+    # Koppar Phone's own voicemail: answer unanswered calls before the operator's
+    # voicemail does (it usually takes them after 20 s), play a greeting, record.
+    "voicemail": {"enabled": False, "answer_after": 15, "max_seconds": 120, "greeting": "text",
+                  "greeting_text": "Hello. I can't take your call right now. Please leave a message after the tone."},
+    "voicemail_number": "",          # the operator's voicemail; empty: found from call forwarding
 }
 
 SCHEMA = """
@@ -44,6 +49,9 @@ CREATE TABLE IF NOT EXISTS scheduled (
     id INTEGER PRIMARY KEY, number TEXT, text TEXT, due REAL, state TEXT DEFAULT 'pending',
     result TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS voicemails (
+    id INTEGER PRIMARY KEY, number TEXT, time TEXT, seconds REAL, path TEXT, heard INTEGER DEFAULT 0,
+    starred INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS messages_number ON messages (number, time);
 CREATE INDEX IF NOT EXISTS events_event ON events (event);
 """
@@ -201,6 +209,37 @@ class Store:
     def calls(self, limit: int = 200) -> list[dict]:
         return self._rows("SELECT c.*, (SELECT name FROM contacts k WHERE k.number = c.number) AS name "
                           "FROM calls c ORDER BY id DESC LIMIT ?", (limit,))
+
+    def call(self, cid: int) -> dict | None:
+        r = self._rows("SELECT * FROM calls WHERE id = ?", (cid,))
+        return r[0] if r else None
+
+    # ---- voicemail ---------------------------------------------------------------
+
+    def add_voicemail(self, number: str | None, seconds: float, path: str) -> int:
+        return self._x("INSERT INTO voicemails (number, time, seconds, path) VALUES (?, ?, ?, ?)",
+                       (number or "", _iso_local(), seconds, path)).lastrowid
+
+    def voicemails(self) -> list[dict]:
+        return self._rows("SELECT v.*, (SELECT name FROM contacts k WHERE k.number = v.number) AS name "
+                          "FROM voicemails v ORDER BY id DESC LIMIT 500")
+
+    def voicemail(self, vid: int) -> dict | None:
+        r = self._rows("SELECT * FROM voicemails WHERE id = ?", (vid,))
+        return r[0] if r else None
+
+    def update_voicemail(self, vid: int, **fields) -> None:
+        if fields:
+            cols = ", ".join(f"{k} = ?" for k in fields)
+            self._x(f"UPDATE voicemails SET {cols} WHERE id = ?", (*fields.values(), vid))
+
+    def delete_voicemail(self, vid: int) -> str | None:
+        v = self.voicemail(vid)
+        self._x("DELETE FROM voicemails WHERE id = ?", (vid,))
+        return v["path"] if v else None
+
+    def new_voicemails(self) -> int:
+        return self._rows("SELECT COUNT(*) AS n FROM voicemails WHERE heard = 0")[0]["n"]
 
     # ---- AT traffic --------------------------------------------------------
 

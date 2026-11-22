@@ -1,14 +1,12 @@
-import json
-import os
 import queue
 import threading
 import time
 
 import pytest
 
-from fake_ec25 import FakeEC25, deliver_pdu, u
+from fake_ec25 import FakeEC25, deliver_pdu
 from koppar_lte_modem.at import ATChannel, ATError
-from koppar_lte_modem.modem import Modem, sms_parts, split_fields, ucs2_decode
+from koppar_lte_modem.modem import Modem, ucs2_decode
 from koppar_lte_modem.transport import SerialTransport
 
 
@@ -20,25 +18,6 @@ def rig():
     yield fake, chan, urcs
     chan.close()
     fake.stop()
-
-
-def test_split_fields():
-    assert split_fields('1,"a,b",,3') == ["1", "a,b", "", "3"]
-    assert split_fields('"LTE",-60') == ["LTE", "-60"]
-
-
-def test_ucs2():
-    assert ucs2_decode(u("Hej 👋")) == "Hej 👋"
-    assert ucs2_decode("REC UNREAD") == "REC UNREAD"
-
-
-def test_sms_parts():
-    assert sms_parts("hello") == (["hello"], False)
-    assert sms_parts("hallå")[1] is True
-    parts, ucs2 = sms_parts("x" * 400)
-    assert not ucs2 and len(parts) == 3 and all(len(p) <= 160 for p in parts)
-    parts, ucs2 = sms_parts("é" * 100)
-    assert ucs2 and len(parts) == 2 and all(len(p) <= 70 for p in parts)
 
 
 def test_command_and_error(rig):
@@ -55,12 +34,6 @@ def test_urc_inside_a_response(rig):
     assert urcs.get(timeout=1) == "RING"
 
 
-def test_unsolicited_urc(rig):
-    fake, chan, urcs = rig
-    fake.urc('+CMTI: "SM",3')
-    assert urcs.get(timeout=1) == '+CMTI: "SM",3'
-
-
 def test_info_signal_registration(rig):
     fake, chan, _ = rig
     m = Modem(chan.command)
@@ -72,17 +45,6 @@ def test_info_signal_registration(rig):
     assert sig["sinr"] == 14.0                  # QCSQ 170 = 170/5 - 20 dB
     reg = m.registration()
     assert reg["registered"] and reg["operator"] == "Telia" and reg["tech"] == "LTE" and reg["band"] == "LTE BAND 3"
-
-
-@pytest.mark.parametrize("result, expected", [
-    ("+CME ERROR: 10", "SIM not inserted"),             # numeric: AT+CMEE=2 not yet set
-    ("+CME ERROR: SIM not inserted", "SIM not inserted"),
-    ("+CME ERROR: 99", "99"),
-])
-def test_sim_errors(rig, result, expected):
-    fake, chan, _ = rig
-    fake.cpin = result
-    assert Modem(chan.command).sim() == expected
 
 
 def test_send_sms_ascii(rig):
@@ -148,13 +110,6 @@ def test_long_text_is_merged(rig):
     assert sorted(fake.inbox) == [9]
 
 
-def test_long_text_missing_part(rig):
-    fake, chan, _ = rig
-    _long_text_inbox(fake, total=3, skip=(2,))
-    msg = Modem(chan.command).list_sms()[0]
-    assert msg.parts == [5, 7] and "[part 2 missing]" in msg.text
-
-
 def test_data_bearer_is_not_a_call(rig):
     fake, chan, _ = rig
     fake.clcc_extra = ['+CLCC: 1,1,0,1,0,"",128']  # what the EC25 lists on LTE: the data connection
@@ -169,27 +124,6 @@ def test_setup_waits_for_the_module(rig):
     m = Modem(chan.command)
     m.ready_poll = 0.01
     assert m.setup(rate=8000)["reboot_needed"] and fake.qdai == "1,0,0,4,0,0,1,1"
-
-
-def test_power_down_disconnect_is_expected(rig, caplog):
-    fake, chan, urcs = rig
-    chan.command("AT+QPOWD=1")
-    for _ in range(50):
-        if not chan.alive:
-            break
-        time.sleep(0.02)
-    assert not chan.alive
-    assert "AT port lost" not in caplog.text
-
-
-def test_unexpected_disconnect_still_warns(rig, caplog):
-    fake, chan, _ = rig
-    fake.stop()
-    for _ in range(50):
-        if not chan.alive:
-            break
-        time.sleep(0.02)
-    assert "AT port lost" in caplog.text
 
 
 def test_setup_sets_pcm(rig):

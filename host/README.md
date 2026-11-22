@@ -31,6 +31,12 @@ over a Unix socket, and the EC25 needs Quectel's Windows drivers.
 - **A call**: the icon turns into a copper phone and a small call panel floats
   over everything: answer (on the Mac's microphone and speakers), decline,
   record, keypad, hang up. No notification permission needed.
+- **Voicemail**: switch it on and Koppar Phone answers the calls you don't pick
+  up (before the operator's voicemail does), plays your greeting (typed, and
+  spoken by the Mac, or recorded) and keeps the message. The operator's own
+  voicemail still takes calls while the Mac or the board is off; its "new
+  messages" signal shows up, with a button to call it.
+- **Recordings**: calls you record play back from the call log.
 - It starts `koppar-lte-modem daemon` itself and stops it when you quit.
   History lives in `~/Library/Application Support/koppar-lte-modem`.
 

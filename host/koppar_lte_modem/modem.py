@@ -100,6 +100,7 @@ class SMS:
     text: str
     parts: list[int] = field(default_factory=list)   # storage indexes of every part, in order
     concat: tuple[int, int, int] | None = field(default=None, repr=False)   # (ref, total, part) of one part
+    mwi: dict | None = field(default=None, repr=False)   # voicemail waiting etc. (see pdu.SmsPdu.mwi)
 
     def as_dict(self):
         return asdict(self)
@@ -123,7 +124,7 @@ def _part(index: int, stat: int, hexpdu: str) -> SMS:
         d = pdu.decode(hexpdu)
     except pdu.PDUError as e:
         return SMS(index, status, "", "", f"[undecodable message: {e}]", [index])
-    return SMS(index, status, d.number, d.time, d.text, [index], d.concat)
+    return SMS(index, status, d.number, d.time, d.text, [index], d.concat, d.mwi)
 
 
 def merge_parts(parts: list[SMS]) -> list[SMS]:

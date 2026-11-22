@@ -30,6 +30,7 @@ class SmsPdu:
     time: str                 # ISO 8601 with the network's UTC offset; "" for submit
     text: str
     concat: tuple[int, int, int] | None = None    # (reference, total parts, this part), 1-based
+    mwi: dict | None = None   # message-waiting indication: {"type", "active", "count", "store"}
 
 
 def unpack_septets(data: bytes, count: int) -> list[int]:
@@ -111,6 +112,31 @@ def _alphabet(dcs: int) -> str:
     return "gsm7"                                  # message-waiting groups 0xC, 0xD
 
 
+MWI_TYPES = {0: "voicemail", 1: "fax", 2: "email", 3: "other"}
+
+
+def _mwi_from_dcs(dcs: int) -> dict | None:
+    """TS 23.038 4: groups 1100 (discard), 1101 and 1110 (store) carry an indication."""
+    group = dcs >> 4
+    if group not in (0xC, 0xD, 0xE):
+        return None
+    return {"type": MWI_TYPES[dcs & 0x03], "active": bool(dcs & 0x08), "count": None, "store": group != 0xC}
+
+
+def _mwi_from_udh(udh: bytes) -> dict | None:
+    """TS 23.040 9.2.3.24.2: special SMS message indication (IEI 0x01)."""
+    i = 0
+    while i + 1 < len(udh):
+        iei, n = udh[i], udh[i + 1]
+        v = udh[i + 2:i + 2 + n]
+        if iei == 0x01 and n == 2:
+            kind = v[0] & 0x7F
+            return {"type": MWI_TYPES.get(kind & 0x03, "other") if kind < 4 else "other",
+                    "active": v[1] > 0, "count": v[1], "store": bool(v[0] & 0x80)}
+        i += 2 + n
+    return None
+
+
 def _concat(udh: bytes) -> tuple[int, int, int] | None:
     i = 0
     while i + 1 < len(udh):
@@ -159,10 +185,12 @@ def decode(hexpdu: str) -> SmsPdu:
 
     alphabet = _alphabet(dcs)
     concat = None
+    mwi = _mwi_from_dcs(dcs)
     udh_len = 0
     if fo & 0x40 and ud:                           # user-data header present
         udh_len = ud[0] + 1
         concat = _concat(ud[1:udh_len])
+        mwi = _mwi_from_udh(ud[1:udh_len]) or mwi
     if alphabet == "gsm7":
         septets = unpack_septets(ud, udl)
         skip = (udh_len * 8 + 6) // 7              # header plus fill bits, in septets
@@ -170,4 +198,4 @@ def decode(hexpdu: str) -> SmsPdu:
     else:
         body = ud[udh_len:udl]
         text = body.decode("utf-16-be", "replace") if alphabet == "ucs2" else body.decode("latin-1")
-    return SmsPdu(kind, number, time, text, concat)
+    return SmsPdu(kind, number, time, text, concat, mwi)

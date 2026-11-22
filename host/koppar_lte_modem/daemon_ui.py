@@ -98,6 +98,12 @@ class UIMixin:
         self._recorder: _Recorder | None = None
         self._replied: dict[str, float] = {}
         self._next_scheduled = 0.0
+        self.scan_state: dict = {"state": "idle"}
+        self.voicemail_number_found: str | None = None
+        self._vm_timer: threading.Timer | None = None
+        self._vm_end = threading.Event()
+        self.voicemail_busy = False          # Koppar Phone's voicemail has the call
+        self.call_audio_factory = None       # tests swap in a fake CallAudio
 
     def _start_ui(self) -> None:
         if not self.ui_port:
@@ -175,6 +181,7 @@ class UIMixin:
                 self._on_sms(ev, settings)
             elif kind == "incoming_call":
                 self._call_begin("in", ev.get("number"))
+                self._voicemail_arm(ev.get("number"), settings)
                 if self.popup and settings.get("popup_on_call"):
                     self._popup(ev.get("number"))
             elif kind == "call_state":
@@ -282,6 +289,10 @@ class UIMixin:
             self.store.call_update(self.call_id, number=number)
 
     def _call_end(self, when: str) -> None:
+        self._vm_end.set()
+        if self._vm_timer:
+            self._vm_timer.cancel()
+            self._vm_timer = None
         rec = self._stop_bridge()
         if self.call_id is not None:
             fields = {"ended": when}
@@ -403,6 +414,34 @@ class UIMixin:
                 neighbours.append(dict(zip(names, f)) if names else {"kind": f[0], "raw": f[1:]})
         return {"serving": serving, "neighbours": neighbours, "raw": lines}
 
+    def ui_scan_start(self) -> dict:
+        """Start an operator scan in the background; its progress and result are pushed
+        as "scan" events (the module only reports when the scan is complete)."""
+        if self.scan_state.get("state") == "running":
+            return self.scan_state
+        # The modem does one thing at a time: read the cells it hears now, before the
+        # scan holds it for minutes, so there's something to show meanwhile.
+        try:
+            cells = self.ui_cell()
+        except ATError:
+            cells = {}
+        self.scan_state = {"state": "running", "started": time.time(), "serving": cells.get("serving"),
+                           "cells": cells.get("neighbours") or []}
+        self.push("scan", **self.scan_state)
+
+        def run():
+            started, cells = self.scan_state["started"], self.scan_state["cells"]
+            try:
+                ops = self.ui_scan()
+                self.scan_state = {"state": "done", "started": started, "finished": time.time(), "operators": ops,
+                                   "cells": cells}
+            except Exception as e:
+                self.scan_state = {"state": "failed", "started": started, "finished": time.time(),
+                                   "error": getattr(e, "result", None) or str(e)}
+            self.push("scan", **self.scan_state)
+        threading.Thread(target=run, name="koppar-scan", daemon=True).start()
+        return self.scan_state
+
     def ui_scan(self) -> list[dict]:
         lines = self.modem_call(lambda m: m.at("AT+COPS=?", timeout=200))
         out = []
@@ -479,8 +518,157 @@ class UIMixin:
             "bridge": bridged,
             "recording": self._recorder is not None,
             "windows": windows,
+            "voicemail_new": self.store.new_voicemails(),
+            "voicemail_busy": self.voicemail_busy,
+            "voicemail_waiting": self.operator_voicemail(),
+            "voicemail_number": self.voicemail_number(),
             "settings": self.store.settings(),
         }
+
+
+# ---- voicemail ---------------------------------------------------------------------
+
+class VoicemailMixin:
+    """Koppar Phone's own voicemail, and the operator's."""
+
+    def voicemail_dir(self) -> Path:
+        d = data_dir() / "voicemail"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    # -- the operator's voicemail: its number and its "message waiting" signal --
+
+    def voicemail_number(self) -> str | None:
+        return (self.store.settings().get("voicemail_number") or "").strip() or self.voicemail_number_found
+
+    def find_voicemail_number(self) -> None:
+        """Unanswered calls are forwarded to the operator's voicemail: that's its number."""
+        try:
+            for l in self._as("daemon", self.modem.at, "AT+CCFC=2,2", 20):
+                if l.startswith("+CCFC:"):
+                    f = split_fields(l[6:])
+                    if len(f) > 2 and f[0] == "1" and f[2]:
+                        self.voicemail_number_found = f[2]
+        except ATError:
+            pass
+
+    def operator_voicemail(self) -> dict | None:
+        ev = self.store.events(kind="voicemail_waiting", limit=1)
+        return {"time": ev[0]["time"], **ev[0]["data"]} if ev else None
+
+    def on_message_waiting(self, part) -> None:
+        m = part.mwi or {}
+        self.emit("voicemail_waiting", active=m.get("active", True), count=m.get("count"), sender=part.number)
+
+    # -- Koppar Phone's voicemail --------------------------------------------------
+
+    def _voicemail_arm(self, number: str | None, settings: dict) -> None:
+        vm = settings.get("voicemail") or {}
+        if not vm.get("enabled") or self._vm_timer or self.voicemail_busy:
+            return
+        self._vm_end = threading.Event()
+        self._vm_timer = threading.Timer(float(vm.get("answer_after", 15)), self._voicemail_take, (number,))
+        self._vm_timer.daemon = True
+        self._vm_timer.start()
+
+    def _still_ringing(self) -> bool:
+        calls = list(self.calls.values())
+        if calls:
+            return any(c.get("direction") == "in" and c.get("state") in ("incoming", "waiting") for c in calls)
+        return bool(self.announced_incoming)
+
+    def _voicemail_take(self, number: str | None) -> None:
+        self._vm_timer = None
+        if not self._still_ringing() or self._vm_end.is_set():
+            return                                   # answered, declined, or the caller gave up
+        self.voicemail_busy = True
+        self._no_mac_audio = True                    # the Mac's audio stays out of it
+        try:
+            self._as("daemon", self.modem.answer)
+        except ATError as e:
+            self.voicemail_busy = False
+            log.warning("voicemail: answering failed: %s", e)
+            return
+        self.emit("voicemail_answered", number=number)
+        threading.Thread(target=self._voicemail_session, args=(number,), name="koppar-voicemail",
+                         daemon=True).start()
+
+    def _voicemail_session(self, number: str | None) -> None:
+        from . import audio
+        vm = self.store.settings().get("voicemail") or {}
+        path = None
+        try:
+            factory = self.call_audio_factory or audio.CallAudio
+            with factory() as ca:
+                time.sleep(0.6)                      # let the call audio settle
+                greeting = self.greeting_samples(ca.rate)
+                if greeting is not None and not self._vm_end.is_set():
+                    ca.play(greeting)
+                if not self._vm_end.is_set():
+                    ca.play(audio.tone(1000, 0.45, ca.rate, level_db=-14))
+                    msg = ca.record_until(self._vm_end, float(vm.get("max_seconds", 120)))
+                    if len(msg) >= ca.rate // 2:     # at least half a second: someone spoke
+                        name = time.strftime("%Y%m%d-%H%M%S") + ".wav"
+                        path = str(self.voicemail_dir() / name)
+                        audio.write_wav(path, msg, ca.rate)
+                        vid = self.store.add_voicemail(number, round(len(msg) / ca.rate, 1), path)
+                        self.emit("voicemail", id=vid, number=number, seconds=round(len(msg) / ca.rate, 1))
+        except Exception as e:
+            log.error("voicemail: %s", e)
+            self.emit("voicemail_failed", number=number, error=str(e))
+        finally:
+            if not self._vm_end.is_set():            # max length reached: end the call
+                try:
+                    self._as("daemon", self.modem.hangup)
+                except ATError:
+                    pass
+            self.voicemail_busy = False
+
+    # -- greetings --------------------------------------------------------------------
+
+    def greeting_path(self) -> Path:
+        return self.voicemail_dir() / "greeting.wav"
+
+    def greeting_samples(self, rate: int):
+        from . import audio
+        p = self.greeting_path()
+        if not p.exists():
+            self.make_greeting()
+        return audio.read_wav(str(p), rate) if p.exists() else None
+
+    def make_greeting(self, text: str | None = None) -> bool:
+        """Speak the greeting text into greeting.wav (macOS `say`, or espeak on Linux)."""
+        vm = self.store.settings().get("voicemail") or {}
+        text = text or vm.get("greeting_text") or ""
+        out = self.greeting_path()
+        try:
+            if sys.platform == "darwin" and shutil.which("say"):
+                subprocess.run(["say", "-o", str(out), "--file-format=WAVE", "--data-format=LEI16@16000", text],
+                               check=True, timeout=60)
+            elif shutil.which("espeak"):
+                subprocess.run(["espeak", "-w", str(out), text], check=True, timeout=60)
+            else:
+                return False
+            return True
+        except (OSError, subprocess.SubprocessError) as e:
+            log.warning("greeting: %s", e)
+            return False
+
+    def record_greeting(self, seconds: float) -> None:
+        """Your own greeting, from the Mac's microphone."""
+        from . import audio
+        sd = audio._sd()
+        rate = 16000
+        x = sd.rec(int(seconds * rate), samplerate=rate, channels=1, dtype="float32", blocking=True)
+        audio.write_wav(str(self.greeting_path()), x[:, 0], rate)
+
+    def safe_media(self, path: str | None, folder: str) -> Path | None:
+        """A recording or voicemail file, only from our own data folder."""
+        if not path:
+            return None
+        p = Path(path).resolve()
+        base = (data_dir() / folder).resolve()
+        return p if p.is_relative_to(base) and p.is_file() else None
 
 
 # ---- desktop helpers ---------------------------------------------------------------

@@ -1,4 +1,4 @@
-// Koppar Phone: the menu-bar app for the Koppar LTE modem.
+// Koppar Phone: the menu-bar app for the modem.
 //
 // A status-bar icon (signal, unread texts, calls), a compact panel when you
 // click it, the full UI in a window when you expand, and a floating call
@@ -124,6 +124,9 @@ final class Model: ObservableObject {
     @Published var recording = false
     @Published var threads: [ThreadInfo] = []
     @Published var unread = 0
+    @Published var voicemailNew = 0
+    @Published var operatorVoicemail = false
+    @Published var voicemailBusy = false
     @Published var keypad = false
     @Published var atLogin = SMAppService.mainApp.status == .enabled
     var callStart: Date?
@@ -140,6 +143,9 @@ final class Model: ObservableObject {
         bridge = s["bridge"] as? Bool ?? false
         recording = s["recording"] as? Bool ?? false
         unread = s["unread"] as? Int ?? unread
+        voicemailNew = s["voicemail_new"] as? Int ?? 0
+        operatorVoicemail = (s["voicemail_waiting"] as? [String: Any])?["active"] as? Bool ?? false
+        voicemailBusy = s["voicemail_busy"] as? Bool ?? false
         var c: CallInfo?
         if let calls = s["calls"] as? [[String: Any]], let first = calls.first {
             c = CallInfo(direction: first["direction"] as? String ?? "in", state: first["state"] as? String ?? "",
@@ -180,13 +186,14 @@ final class Model: ObservableObject {
         if ev["ui"] as? Bool == true {
             switch kind {
             case "signal": applySignal(ev)
-            case "message", "bridge", "read": await refresh()
+            case "message", "bridge", "read", "voicemail_heard": await refresh()
             default: break
             }
             return
         }
         let refreshOn: Set = ["ring", "incoming_call", "call_state", "call_ended", "call_audio", "ready", "module_on",
-                              "module_off", "network", "modem_disconnected", "sms_sent", "sms"]
+                              "module_off", "network", "modem_disconnected", "sms_sent", "sms", "voicemail",
+                              "voicemail_answered", "voicemail_waiting", "voicemail_failed"]
         if refreshOn.contains(kind) { await refresh() }
     }
 
@@ -381,6 +388,18 @@ struct PopoverView: View {
                 .buttonStyle(.borderedProminent).controlSize(.small)
                 .padding(8).background(RoundedRectangle(cornerRadius: 8).fill(Color(copper).opacity(0.08)))
             }
+            if m.voicemailNew > 0 || m.operatorVoicemail {
+                Button { open("voicemail") } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "recordingtape").foregroundColor(Color(copper))
+                        Text(m.voicemailNew > 0 ? "\(m.voicemailNew) new voicemail\(m.voicemailNew == 1 ? "" : "s")"
+                                                : "New messages on your operator's voicemail")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Spacer()
+                        Text("Listen").font(.caption).foregroundColor(Color(copper))
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
             Divider()
             HStack {
                 Text("Messages").font(.caption).foregroundColor(.secondary)
@@ -469,7 +488,14 @@ struct CallView: View {
                     Button { open("calls") } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                         .buttonStyle(.borderless).help("Open the full app")
                 }
-                if c.incoming {
+                if m.voicemailBusy {
+                    HStack {
+                        Label("Voicemail is recording a message", systemImage: "recordingtape").font(.callout)
+                        Spacer()
+                        Button { m.act("/api/call/hangup") } label: { Image(systemName: "phone.down.fill") }
+                            .buttonStyle(.borderedProminent).tint(.red).help("End the call")
+                    }
+                } else if c.incoming {
                     HStack(spacing: 10) {
                         Button { m.act("/api/call/hangup") } label: { Label("Decline", systemImage: "phone.down.fill").frame(maxWidth: .infinity) }
                             .tint(.red)
@@ -511,7 +537,7 @@ struct CallView: View {
 // MARK: - The full window
 
 @MainActor
-final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
+final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
     private var window: NSWindow?
     private var web: WKWebView?
 
@@ -527,6 +553,7 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
             cfg.websiteDataStore = .nonPersistent()
             let w = WKWebView(frame: .zero, configuration: cfg)
             w.navigationDelegate = self
+            w.uiDelegate = self                       // confirm() and prompt() in the page
             w.load(URLRequest(url: url))
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
                                styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -551,6 +578,43 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     func windowWillClose(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)         // back to the menu bar only
+    }
+
+    // The page's confirm(), prompt() and alert(): native dialogs. A web view without
+    // these shows nothing, and confirm() quietly returns false.
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo) async {
+        let a = NSAlert()
+        a.messageText = message
+        a.addButton(withTitle: "OK")
+        _ = await sheet(a)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo) async -> Bool {
+        let a = NSAlert()
+        a.messageText = message
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+        return await sheet(a) == .alertFirstButtonReturn
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo) async -> String? {
+        let a = NSAlert()
+        a.messageText = prompt
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = defaultText ?? ""
+        a.accessoryView = field
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = field
+        return await sheet(a) == .alertFirstButtonReturn ? field.stringValue : nil
+    }
+
+    private func sheet(_ a: NSAlert) async -> NSApplication.ModalResponse {
+        guard let w = window else { return a.runModal() }
+        return await withCheckedContinuation { c in a.beginSheetModal(for: w) { c.resume(returning: $0) } }
     }
 
     // Links out of the UI open in the browser, not in the app window.
@@ -728,7 +792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         img.isTemplate = true
-        img.accessibilityDescription = "Koppar signal"
+        img.accessibilityDescription = "Koppar Phone signal"
         return img
     }
 

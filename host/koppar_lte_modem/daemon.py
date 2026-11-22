@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from .at import ATChannel, ATError, ATTimeout
 from .board import Board, BoardError
 from .link import socket_path
-from .daemon_ui import UIMixin
+from .daemon_ui import UIMixin, VoicemailMixin
 from .modem import Modem, merge_parts, split_fields
 from .store import Store
 from .web import DEFAULT_PORT
@@ -36,7 +36,7 @@ from .transport import TransportError, open_at_transport
 log = logging.getLogger("koppar_lte_modem.daemon")
 
 
-class Daemon(UIMixin):
+class Daemon(UIMixin, VoicemailMixin):
     def __init__(self, hooks: list[str] | None = None, json_out: bool = False, power_on: bool = True,
                  delete_sms: bool = False, pin: str | None = None, ui_port: int | None = DEFAULT_PORT,
                  popup: bool = True, store: Store | None = None):
@@ -157,6 +157,7 @@ class Daemon(UIMixin):
         except ATError:
             pass
         self.sim_state, self.module_info = sim, info
+        self.find_voicemail_number()
         self.emit("ready", sim=sim, imei=info.get("imei"), revision=info.get("revision"), via=self.at.transport.name)
 
     # ---- URCs and polling ------------------------------------------------
@@ -184,6 +185,14 @@ class Daemon(UIMixin):
                 return
             if part is None:
                 return
+            if part.mwi and part.mwi.get("type") == "voicemail":
+                self.on_message_waiting(part)        # the operator's "you have voicemail"
+                if not part.mwi.get("store") or not part.text.strip():
+                    try:
+                        self.modem.delete_sms(idx)   # a bare signal, not a text to keep
+                    except ATError:
+                        pass
+                    return
             if part.concat is None:
                 msg = part
             else:                                   # one part of a long text: wait for the rest

@@ -31,6 +31,11 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
 DEFAULT_PORT = 8025
 
 
+class FileResponse:
+    def __init__(self, path, ctype: str = "audio/wav"):
+        self.path, self.ctype = path, ctype
+
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -196,6 +201,87 @@ def _bridge(d, m, q, b):
     return d.ui_bridge(bool(b.get("on")), record=bool(b.get("record")))
 
 
+@route("GET", r"/api/calls/(\d+)/recording")
+def _recording(d, m, q, b):
+    c = d.store.call(int(m[1]))
+    p = d.safe_media(c and c.get("recording"), "recordings")
+    if not p:
+        raise ApiError(404, "no recording for this call")
+    return FileResponse(p)
+
+
+# ---- voicemail ----------------------------------------------------------------------
+
+@route("GET", "/api/voicemail")
+def _voicemails(d, m, q, b):
+    return d.store.voicemails()
+
+
+@route("GET", r"/api/voicemail/(\d+)/audio")
+def _voicemail_audio(d, m, q, b):
+    v = d.store.voicemail(int(m[1]))
+    p = d.safe_media(v and v.get("path"), "voicemail")
+    if not p:
+        raise ApiError(404, "no such voicemail")
+    if not v["heard"]:
+        d.store.update_voicemail(v["id"], heard=1)
+        d.push("voicemail_heard", id=v["id"])
+    return FileResponse(p)
+
+
+@route("POST", r"/api/voicemail/(\d+)")
+def _voicemail_update(d, m, q, b):
+    fields = {k: int(bool(b[k])) for k in ("heard", "starred") if k in b}
+    d.store.update_voicemail(int(m[1]), **fields)
+    d.push("voicemail_heard", id=int(m[1]))
+    return {"ok": True}
+
+
+@route("DELETE", r"/api/voicemail/(\d+)")
+def _voicemail_delete(d, m, q, b):
+    p = d.safe_media(d.store.delete_voicemail(int(m[1])), "voicemail")
+    if p:
+        p.unlink()
+    d.push("voicemail_heard", id=int(m[1]))
+    return {"ok": True}
+
+
+@route("GET", "/api/voicemail/greeting")
+def _greeting(d, m, q, b):
+    p = d.greeting_path()
+    if not p.exists() and not d.make_greeting():
+        raise ApiError(404, "no greeting yet")
+    return FileResponse(p)
+
+
+@route("POST", "/api/voicemail/greeting")
+def _greeting_text(d, m, q, b):
+    (text,) = _need(b, "text")
+    vm = dict(d.store.settings()["voicemail"], greeting="text", greeting_text=text)
+    d.store.set_settings({"voicemail": vm})
+    if not d.make_greeting(text):
+        raise ApiError(503, "no text-to-speech on this computer: record your greeting instead")
+    return {"ok": True}
+
+
+@route("POST", "/api/voicemail/greeting/record")
+def _greeting_record(d, m, q, b):
+    seconds = min(max(float(b.get("seconds", 8)), 2), 30)
+    d.record_greeting(seconds)
+    vm = dict(d.store.settings()["voicemail"], greeting="recorded")
+    d.store.set_settings({"voicemail": vm})
+    return {"ok": True}
+
+
+@route("POST", "/api/voicemail/call")
+def _voicemail_call(d, m, q, b):
+    number = d.voicemail_number()
+    if not number:
+        raise ApiError(404, "the operator's voicemail number isn't known: set it under Voicemail")
+    d.ui_dial(number)
+    return {"ok": True, "number": number}
+
+
 # ---- network, console, device ------------------------------------------------
 
 @route("GET", "/api/cell")
@@ -205,7 +291,12 @@ def _cell(d, m, q, b):
 
 @route("POST", "/api/scan")
 def _scan(d, m, q, b):
-    return d.ui_scan()
+    return d.ui_scan_start()
+
+
+@route("GET", "/api/scan")
+def _scan_state(d, m, q, b):
+    return d.scan_state
 
 
 @route("POST", "/api/ussd")
@@ -309,6 +400,8 @@ class _Handler(BaseHTTPRequestHandler):
             if meth == method and mt:
                 try:
                     out = fn(self.daemon, mt, q, body)
+                    if isinstance(out, FileResponse):
+                        return self._send(200, out.path.read_bytes(), out.ctype)
                     extra = None
                     if url.path.startswith("/api/export/"):
                         extra = {"Content-Disposition": 'attachment; filename="koppar-events.json"'}

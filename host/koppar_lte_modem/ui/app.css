@@ -200,6 +200,14 @@ pre.json { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5p
 .key:hover { border-color: var(--copper); }
 .key:active { background: var(--copper-soft); }
 .dir { font-size: 16px; }
+.spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--copper); animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--copper); border-radius: 3px; transition: width 1s linear; }
+audio.player { height: 32px; max-width: 260px; vertical-align: middle; }
+tr.unheard strong { font-weight: 700; }
+.dot.new { background: var(--copper); }
 .dir.missed { color: var(--bad); }
 
 /* ---- call layer ---- */
