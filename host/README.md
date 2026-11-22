@@ -1,7 +1,57 @@
 # `koppar-lte-modem`: the computer side
 
 A command line, a background daemon and a Python API for the board: AT
-commands, texts, calls, call audio, events for scripts and AI agents.
+commands, texts, calls, call audio, events for scripts and AI agents. On
+macOS, **Koppar Phone** puts all of it in the menu bar.
+
+## Install
+
+From the [releases](https://github.com/Koppar-AI/koppar-lte-modem/releases) page:
+
+| You have | Download | Then |
+|---|---|---|
+| A Mac with Apple Silicon | `Koppar-Phone-<version>-macos-arm64.zip` | Unzip, move Koppar Phone to Applications, open it. The command line is inside: `Koppar Phone.app/Contents/Resources/cli/koppar-lte-modem` |
+| A Mac with an Intel chip | `Koppar-Phone-<version>-macos-x86_64.zip` | The same |
+| Linux, x86-64 or ARM64 | `koppar-lte-modem-<version>-linux-<arch>.tar.gz` | Unpack and run `koppar-lte-modem/koppar-lte-modem`. Add yourself to the `dialout` group for the module's serial ports, and install `libportaudio2` for call audio |
+| Python 3.10+ anywhere | `koppar_lte_modem-<version>-py3-none-any.whl` | `pip install '<file>[audio]'` (macOS also needs `brew install libusb`) |
+
+The standalone downloads carry their own Python: nothing else to install. If a
+release isn't signed with a Developer ID, macOS asks you to confirm Koppar Phone the
+first time: right-click it, Open. Windows isn't supported yet: the daemon talks
+over a Unix socket, and the EC25 needs Quectel's Windows drivers.
+
+## Koppar Phone, the menu-bar app (macOS)
+
+- **The icon**: signal bars, and how many texts are unread. Click it for the
+  network, your latest conversations, Text, Call, Open at login and Quit.
+- **Open Full App**: the full interface in a window (and in the Dock while it's
+  open): overview, messages, calls, events with all their data, an AT
+  console with every command anyone sent, network and cell details, USSD,
+  automations, and the device.
+- **A call**: the icon turns into a copper phone and a small call panel floats
+  over everything: answer (on the Mac's microphone and speakers), decline,
+  record, keypad, hang up. No notification permission needed.
+- **Voicemail**: switch it on and Koppar Phone answers the calls you don't pick
+  up (before the operator's voicemail does), plays your greeting (typed, and
+  spoken by the Mac, or recorded) and keeps the message. The operator's own
+  voicemail still takes calls while the Mac or the board is off; its "new
+  messages" signal shows up, with a button to call it.
+- **Recordings**: calls you record play back from the call log.
+- It starts `koppar-lte-modem daemon` itself and stops it when you quit.
+  History lives in `~/Library/Application Support/koppar-lte-modem`.
+
+| Calls | Voicemail | Network |
+|---|---|---|
+| ![Calls: dial pad and call log, with a recorded call](../images/app-calls.png) | ![Voicemail: messages, greeting, the operator's voicemail](../images/app-voicemail.png) | ![Network: six hours of signal, cell details, USSD, operator scan](../images/app-network.png) |
+
+The screenshots use made-up people and numbers: `tools/demo.py` runs the real
+UI on a simulated modem, no board needed.
+
+Build it yourself with the Command Line Tools: `macos/build.sh` (see the top
+of the script). Without the app, `koppar-lte-modem daemon` serves the same
+interface on 127.0.0.1:8025 and `koppar-lte-modem ui` opens it in a browser.
+
+## From source
 
 ```sh
 cd host
@@ -35,7 +85,7 @@ hands out 192.168.225.x by DHCP.
 | `koppar-lte-modem status`, `info` | Board, SIM, registration, signal (RSRP/RSRQ/SINR on LTE), calls |
 | `koppar-lte-modem power on\|off\|reset\|restart` | `off` is graceful (`AT+QPOWD`): run it before unplugging |
 | `koppar-lte-modem sms send <number> <text>` | Long or non-GSM text (accents, emoji) handled: UCS2, numbered parts |
-| `koppar-lte-modem sms list [--unread]`, `read <i>`, `delete <i\|all>` | |
+| `koppar-lte-modem sms list [--unread]`, `read <i>`, `delete <i\|all>` | Read as PDUs: long texts come back whole (`delete` removes every part), named senders (a shop, a bank) by name |
 | `koppar-lte-modem call <number>`, `answer`, `hangup`, `calls`, `dtmf <digits>` | |
 | `koppar-lte-modem audio play <wav>`, `record <wav> -s 10`, `bridge` | Into the call, from the call, or your mic and speakers on the call |
 | `koppar-lte-modem at [cmd]` | One AT command, or an AT console |
@@ -98,3 +148,40 @@ stream `CallAudio` to your speech-to-text and from your text-to-speech.
 ```sh
 PYTHONPATH=tests .venv/bin/python -m pytest tests
 ```
+
+## Security
+
+- **Your data stays yours.** Texts, calls, recordings and voicemail live in
+  `~/Library/Application Support/koppar-lte-modem` (Linux:
+  `~/.local/share/koppar-lte-modem`), readable by your user account only.
+- **The UI listens on 127.0.0.1 only**, and every request needs a key: the
+  master token in that folder (for the CLI and the app, sent as a header) or a
+  session. A window opens with a one-time launch code that the page swaps for
+  a session kept in that tab; no key ever appears in a URL, the browser
+  history or `ps`. Requests must name 127.0.0.1 as their host (no DNS
+  rebinding), and the page's content policy allows no third-party code.
+- **Settings are checked** before they reach the modem: numbers must be
+  numbers (they end up in AT commands), the webhook must be http(s).
+- **Automatic texts are capped** at 30 an hour (auto-replies and forwards), so
+  a flood of texts with spoofed senders can't make the line send hundreds.
+- **What it can't protect:** any program running as your user can read the
+  master token, like any other file of yours. On macOS, other user accounts
+  on the same Mac can open the board's USB serial ports directly. And the
+  board accepts a firmware update from anything that can open its control
+  port (the image is checked with a CRC, not a signature); see `REV-C.md`.
+
+## Releasing
+
+Push a tag: `git tag v0.3.0 && git push origin v0.3.0`.
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs the
+tests, then builds the standalone CLI for macOS (arm64, x86_64) and Linux
+(x86_64, arm64), Koppar Phone.app with that CLI inside, and a wheel and sdist, and
+publishes them as a GitHub release with `SHA256SUMS`. Run the workflow by hand
+for a test build (artifacts only).
+
+To build the same things on a Mac: `packaging/build-cli.sh` (needs PyInstaller
+and `KOPPAR_LIBUSB_DYLIB`), then `KOPPAR_EMBED_CLI=../dist/koppar-lte-modem
+macos/build.sh`.
+
+To sign and notarize the macOS app, add the repository secrets listed at the
+top of the workflow (a Developer ID certificate and an app-specific password).

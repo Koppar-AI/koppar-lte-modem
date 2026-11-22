@@ -164,6 +164,23 @@ class CallAudio:
             got += len(blk)
         return np.concatenate(parts)[:need]
 
+    def record_until(self, stop: threading.Event, max_seconds: float):
+        """What the caller says until `stop` is set or `max_seconds` pass (voicemail)."""
+        import numpy as np
+
+        while not self._rx.empty():
+            self._rx.get_nowait()
+        need = int(max_seconds * self.rate)
+        parts, got = [], 0
+        while got < need and not stop.is_set():
+            try:
+                blk = self._rx.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            parts.append(blk)
+            got += len(blk)
+        return np.concatenate(parts)[:need] if parts else np.zeros(0, np.float32)
+
 
 def play_file(path: str) -> None:
     sd = _sd()
@@ -178,18 +195,25 @@ def record_file(path: str, seconds: float) -> None:
     write_wav(path, x[:, 0], rate)
 
 
-def bridge(stop: threading.Event | None = None) -> None:
+def bridge(stop: threading.Event | None = None, tap=None) -> None:
     """Headset mode: the computer's default mic into the call, the call into
-    its default speakers. Runs until `stop` is set (or Ctrl-C)."""
+    its default speakers. Runs until `stop` is set (or Ctrl-C). `tap(direction,
+    samples)`, if given, gets a copy of each block: "up" is what you say, "down"
+    what the caller says (float32 mono at the call rate)."""
     sd = _sd()
     inp, out, rate = find_device()
     default_in, default_out = sd.default.device
 
-    def through(indata, outdata, frames, t, status):
-        outdata[:] = indata
+    def through(direction):
+        def cb(indata, outdata, frames, t, status):
+            outdata[:] = indata
+            if tap is not None:
+                tap(direction, indata[:, 0].copy())
+        return cb
 
-    up = sd.Stream(device=(default_in, out), samplerate=rate, channels=1, dtype="float32", callback=through)
-    down = sd.Stream(device=(inp, default_out), samplerate=rate, channels=1, dtype="float32", callback=through)
+    up = sd.Stream(device=(default_in, out), samplerate=rate, channels=1, dtype="float32", callback=through("up"))
+    down = sd.Stream(device=(inp, default_out), samplerate=rate, channels=1, dtype="float32",
+                     callback=through("down"))
     stop = stop or threading.Event()
     with up, down:
         try:

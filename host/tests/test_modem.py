@@ -1,14 +1,12 @@
-import json
-import os
 import queue
 import threading
 import time
 
 import pytest
 
-from fake_ec25 import FakeEC25, u
+from fake_ec25 import FakeEC25, deliver_pdu
 from koppar_lte_modem.at import ATChannel, ATError
-from koppar_lte_modem.modem import Modem, sms_parts, split_fields, ucs2_decode
+from koppar_lte_modem.modem import Modem, ucs2_decode
 from koppar_lte_modem.transport import SerialTransport
 
 
@@ -20,25 +18,6 @@ def rig():
     yield fake, chan, urcs
     chan.close()
     fake.stop()
-
-
-def test_split_fields():
-    assert split_fields('1,"a,b",,3') == ["1", "a,b", "", "3"]
-    assert split_fields('"LTE",-60') == ["LTE", "-60"]
-
-
-def test_ucs2():
-    assert ucs2_decode(u("Hej 👋")) == "Hej 👋"
-    assert ucs2_decode("REC UNREAD") == "REC UNREAD"
-
-
-def test_sms_parts():
-    assert sms_parts("hello") == (["hello"], False)
-    assert sms_parts("hallå")[1] is True
-    parts, ucs2 = sms_parts("x" * 400)
-    assert not ucs2 and len(parts) == 3 and all(len(p) <= 160 for p in parts)
-    parts, ucs2 = sms_parts("é" * 100)
-    assert ucs2 and len(parts) == 2 and all(len(p) <= 70 for p in parts)
 
 
 def test_command_and_error(rig):
@@ -55,12 +34,6 @@ def test_urc_inside_a_response(rig):
     assert urcs.get(timeout=1) == "RING"
 
 
-def test_unsolicited_urc(rig):
-    fake, chan, urcs = rig
-    fake.urc('+CMTI: "SM",3')
-    assert urcs.get(timeout=1) == '+CMTI: "SM",3'
-
-
 def test_info_signal_registration(rig):
     fake, chan, _ = rig
     m = Modem(chan.command)
@@ -69,12 +42,14 @@ def test_info_signal_registration(rig):
     assert m.sim() == "READY"
     sig = m.signal()
     assert sig["rssi_dbm"] == -73 and sig["rsrp"] == -89 and sig["rat"] == "LTE"
+    assert sig["sinr"] == 14.0                  # QCSQ 170 = 170/5 - 20 dB
     reg = m.registration()
     assert reg["registered"] and reg["operator"] == "Telia" and reg["tech"] == "LTE" and reg["band"] == "LTE BAND 3"
 
 
 def test_send_sms_ascii(rig):
     fake, chan, _ = rig
+    assert fake.cmgf == 0                          # as after a module restart: sending used to fail (CMS 304)
     refs = Modem(chan.command).send_sms("+447700900123", "hello from the board")
     assert refs == [1]
     assert fake.sms_sent == [("+447700900123", "hello from the board", "IRA", "17,167,0,0")]
@@ -112,6 +87,43 @@ def test_calls(rig):
     assert m.calls() == []
     with pytest.raises(ValueError):
         m.dial("123; AT+CFUN=0")
+
+
+def _long_text_inbox(fake, total=2, skip=()):
+    body = ["Välkommen! Ditt abonnemang är aktivt, grüße och smørrebrød. " * 2, "Ha det bra.", " Slut."]
+    fake.inbox = {i + 5: [0, deliver_pdu("MyShop", body[i], when=f"26112219444{i}", concat=(54, total, i + 1))]
+                  for i in range(total) if i + 1 not in skip}
+    fake.inbox[9] = [0, deliver_pdu("+447700900123", "short one")]
+    return "".join(body[:total])
+
+
+def test_long_text_is_merged(rig):
+    fake, chan, _ = rig
+    whole = _long_text_inbox(fake)
+    m = Modem(chan.command)
+    msgs = m.list_sms()
+    assert [(s.number, s.parts) for s in msgs] == [("MyShop", [5, 6]), ("+447700900123", [9])]
+    assert msgs[0].text == whole and msgs[0].time == "2026-11-22T19:44:40+01:00"
+    assert msgs[0].status == "REC UNREAD"
+    assert m.read_sms(6).text == whole             # either part reads the whole text
+    assert m.delete_message(6) == [5, 6]
+    assert sorted(fake.inbox) == [9]
+
+
+def test_data_bearer_is_not_a_call(rig):
+    fake, chan, _ = rig
+    fake.clcc_extra = ['+CLCC: 1,1,0,1,0,"",128']  # what the EC25 lists on LTE: the data connection
+    m = Modem(chan.command)
+    assert m.calls() == []
+    assert [c.voice for c in m.calls(voice_only=False)] == [False]
+
+
+def test_setup_waits_for_the_module(rig):
+    fake, chan, _ = rig
+    fake.busy = 2                                  # just started: audio commands answer ERROR
+    m = Modem(chan.command)
+    m.ready_poll = 0.01
+    assert m.setup(rate=8000)["reboot_needed"] and fake.qdai == "1,0,0,4,0,0,1,1"
 
 
 def test_setup_sets_pcm(rig):
@@ -163,3 +175,20 @@ def test_daemon_events_and_socket(rig, tmp_path, monkeypatch):
     assert events[-1][0] == "call_ended"
     link.close()
     d.server.shutdown()
+
+
+def test_daemon_reports_a_long_text_once(rig):
+    fake, chan, _ = rig
+    from koppar_lte_modem.daemon import Daemon
+
+    whole = _long_text_inbox(fake)
+    d = Daemon(json_out=True)
+    events = []
+    d.emit = lambda ev, **f: events.append((ev, f))
+    d.at, d.modem = chan, Modem(chan.command)
+    d._handle_urc('+CMTI: "ME",5')
+    assert [e for e in events if e[0] == "sms"] == []          # part 1 of 2: wait
+    d._handle_urc('+CMTI: "ME",6')
+    sms = [f for e, f in events if e == "sms"]
+    assert len(sms) == 1
+    assert (sms[0]["number"], sms[0]["text"], sms[0]["parts"]) == ("MyShop", whole, [5, 6])

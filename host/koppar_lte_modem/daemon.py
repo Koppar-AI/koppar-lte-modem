@@ -27,15 +27,19 @@ from datetime import datetime, timezone
 from .at import ATChannel, ATError, ATTimeout
 from .board import Board, BoardError
 from .link import socket_path
-from .modem import Modem, split_fields
+from .daemon_ui import UIMixin, VoicemailMixin
+from .modem import Modem, merge_parts, split_fields
+from .store import Store, private_dir
+from .web import DEFAULT_PORT
 from .transport import TransportError, open_at_transport
 
 log = logging.getLogger("koppar_lte_modem.daemon")
 
 
-class Daemon:
+class Daemon(UIMixin, VoicemailMixin):
     def __init__(self, hooks: list[str] | None = None, json_out: bool = False, power_on: bool = True,
-                 delete_sms: bool = False, pin: str | None = None):
+                 delete_sms: bool = False, pin: str | None = None, ui_port: int | None = DEFAULT_PORT,
+                 popup: bool = True, store: Store | None = None):
         self.hooks = hooks or []
         self.json_out = json_out
         self.power_on = power_on
@@ -49,10 +53,12 @@ class Daemon:
         self.sub_lock = threading.Lock()
         self.stop = threading.Event()
         self.calls: dict[int, dict] = {}
+        self.sms_parts: dict[tuple, dict] = {}   # long texts arriving part by part
         self.ringing_number: str | None = None
         self.announced_incoming = False
         self.network: dict | None = None
         self.server: socketserver.ThreadingUnixStreamServer | None = None
+        self._ui_init(ui_port, popup, store)
 
     # ---- events ----------------------------------------------------------
 
@@ -66,6 +72,7 @@ class Daemon:
         with self.sub_lock:
             for q in list(self.subscribers):
                 q.put(ev)
+        self._on_event(dict(ev))
         for hook in self.hooks:
             env = dict(os.environ)
             env["KOPPAR_EVENT"] = event
@@ -118,7 +125,7 @@ class Daemon:
             try:
                 t = open_at_transport()
                 self.at = ATChannel(t, on_urc=self.urcs.put)
-                self.modem = Modem(self.at.command)
+                self.modem = Modem(self._modem_at)
                 # The port can enumerate before the AT parser is up.
                 for _ in range(20):
                     try:
@@ -149,6 +156,8 @@ class Daemon:
             info = m.info()
         except ATError:
             pass
+        self.sim_state, self.module_info = sim, info
+        self.find_voicemail_number()
         self.emit("ready", sim=sim, imei=info.get("imei"), revision=info.get("revision"), via=self.at.transport.name)
 
     # ---- URCs and polling ------------------------------------------------
@@ -170,17 +179,40 @@ class Daemon:
             f = split_fields(line[6:])
             idx = int(f[1])
             try:
-                msg = self.modem.read_sms(idx)
+                part = self.modem.read_part(idx)
             except ATError as e:
                 self.emit("sms", index=idx, error=e.result)
                 return
-            if msg:
-                self.emit("sms", index=idx, number=msg.number, sent=msg.time, text=msg.text)
-                if self.delete_sms:
+            if part is None:
+                return
+            if part.mwi and part.mwi.get("type") == "voicemail":
+                self.on_message_waiting(part)        # the operator's "you have voicemail"
+                if not part.mwi.get("store") or not part.text.strip():
                     try:
-                        self.modem.delete_sms(idx)
+                        self.modem.delete_sms(idx)   # a bare signal, not a text to keep
                     except ATError:
                         pass
+                    return
+            if part.concat is None:
+                msg = part
+            else:                                   # one part of a long text: wait for the rest
+                ref, total, n = part.concat
+                key = (part.number, ref, total)
+                got = self.sms_parts.setdefault(key, {})
+                got[n] = part
+                if len(got) < total:
+                    return
+                msg = merge_parts([got[i] for i in sorted(got)])[0]
+                del self.sms_parts[key]
+            self.emit("sms", index=msg.index, parts=msg.parts, number=msg.number, sent=msg.time, text=msg.text)
+            if self.delete_sms:
+                for i in msg.parts:
+                    try:
+                        self.modem.delete_sms(i)
+                    except ATError:
+                        pass
+        elif line.startswith("+CUSD:"):
+            self._on_cusd(line)
         elif line in ("NO CARRIER", "BUSY", "NO ANSWER"):
             self._poll_calls()
         elif line == "POWERED DOWN":
@@ -220,13 +252,14 @@ class Daemon:
                       band=reg.get("band"), rssi_dbm=sig.get("rssi_dbm"))
             self._led("net", "on" if reg.get("registered") else "auto")
         self.network = reg
+        self._record_signal(reg, sig)
 
     # ---- socket server ---------------------------------------------------
 
     def _serve(self) -> None:
         daemon = self
         path = socket_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(path.parent)
         if path.exists():
             path.unlink()
 
@@ -281,7 +314,8 @@ class Daemon:
             if not (self.at and self.at.alive):
                 return {"ok": False, "error": "modem not connected (yet)"}
             try:
-                lines = self.at.command(req["cmd"], timeout=float(req.get("timeout", 5)), data=req.get("data"))
+                lines = self.at_logged(req["cmd"], timeout=float(req.get("timeout", 5)), data=req.get("data"),
+                                       source="cli")
                 return {"ok": True, "lines": lines}
             except ATTimeout as e:
                 return {"ok": False, "kind": "timeout", "error": e.result, "lines": e.lines}
@@ -301,6 +335,7 @@ class Daemon:
     def run(self) -> None:
         signal.signal(signal.SIGTERM, lambda *a: self.stop.set())
         threading.Thread(target=self._serve, name="koppar-socket", daemon=True).start()
+        self._start_ui()
         try:
             self._open_board()
             while not self.stop.is_set():
@@ -318,11 +353,12 @@ class Daemon:
                     self.board.poll_events(0)
                     now = time.monotonic()
                     if now >= next_calls:
-                        self._poll_calls()
+                        self._as("poll", self._poll_calls)
                         next_calls = now + (1 if (self.calls or self.announced_incoming) else 3)
                     if now >= next_net:
-                        self._poll_network()
+                        self._as("poll", self._poll_network)
                         next_net = now + 15
+                    self._run_scheduled()
                 if not self.stop.is_set():
                     self.emit("modem_disconnected")
                     self.calls, self.network = {}, None
@@ -333,6 +369,9 @@ class Daemon:
         except KeyboardInterrupt:
             pass
         finally:
+            self._stop_bridge()
+            if self.ui_server:
+                self.ui_server.shutdown()
             self._led("net", "auto")
             self._led("ring", "auto")
             if self.server:

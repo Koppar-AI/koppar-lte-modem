@@ -26,9 +26,17 @@ What has been tested on an assembled board ([all results](REVIEW.md#bring-up-res
 - **The module's controls:** the PWRKEY and RESET_N transistors switch, and the NET, RING and CALL LEDs light.
 - **The firmware:** the RP2040 runs as a USB sound card on the computer. A test tone and a loopback come back at the expected level, the audio streams reopen reliably, and the firmware updates itself over USB.
 
-**Not yet tested: everything that needs the Quectel EC25-EUX.** The module has been
-ordered. Once it is fitted, the next results are the 1.8 V side, the SIM, the
-antennas, then the first call, text and data connection. They will be added here.
+**With the Quectel EC25-EUX fitted** (soldered by hand, with a SIM on SFR):
+
+![Board 2 working: the module fitted, both antennas on, the NET LED lit](images/working-board.jpg)
+
+- **The module:** it starts on PWRKEY in about 3 s, appears on USB about 12 s later, and reads its own supply at 3.81 V under load.
+- **The network:** registers on 4G (bands 3 and 20), with both antennas on the U.FL connectors.
+- **Texts:** sent and received, including long texts in several parts and named senders.
+- **Calls:** placed and answered, with two-way audio through the computer's microphone and speakers over the board's USB sound card. With VoLTE off, calls fall back to 3G.
+- **Voicemail:** Koppar Phone answers missed calls, plays a greeting and records the message.
+
+Board 1 started but didn't appear on USB after a second soldering pass: its module's USB pins (U8 69 to 71) need reflowing.
 
 The boards of this first order have no recovery pads on the back
 ([see below](#bring-up-and-recovery)); the design files have them.
@@ -53,6 +61,12 @@ transmit bursts, and 3.3 V for the hub, the RP2040 and its flash.
 
 The [schematic](images/schematic.png) is also in [PDF](board/fab/schematic.pdf).
 
+On a Mac, **Koppar Phone** puts the line in the menu bar: texts, calls on the
+computer's microphone and speakers, voicemail, and the network in detail
+([more](host/README.md#koppar-phone-the-menu-bar-app-macos)).
+
+![Koppar Phone: the menu-bar panel over the full window, on the calls page (phone numbers blurred)](images/koppar-phone.png)
+
 ## What is here
 
 | Path | What it is |
@@ -62,8 +76,9 @@ The [schematic](images/schematic.png) is also in [PDF](board/fab/schematic.pdf).
 | [`board/fab/`](board/fab) | Gerbers and drill files (`gerbers.zip`), IPC-2581, schematic PDF. |
 | [`board/fab/jlc/`](board/fab/jlc) | JLCPCB assembly BOM and placement files, with the part choices checked by hand. |
 | [`REVIEW.md`](REVIEW.md) | The design review: what passed, what changed and why, ordering notes, what is still open. |
+| [`REV-C.md`](REV-C.md) | What to change in the next revision, learned bringing up rev B. |
 | [`firmware/`](firmware) | RP2040 firmware: `bringup/` (board test) and `modem/` (USB sound card for calls, module power, LEDs). |
-| [`host/`](host) | `koppar-lte-modem`: command line, event daemon and Python API for the computer. |
+| [`host/`](host) | `koppar-lte-modem`: command line, event daemon and Python API for the computer, and Koppar Phone, the macOS menu-bar app. |
 
 ## Build one
 
@@ -136,9 +151,10 @@ three are fixed here, along with the parts list and the assembly rotations.
 
 | | |
 |---|---|
-| Board | Rev B: 0 DRC errors, 0 unconnected, KiCad 10. Built; bring-up without the module passed ([results](REVIEW.md#bring-up-results-2026-11-10-rev-b-ec25-not-yet-fitted)). |
-| Firmware | USB sound card verified on the board (loopback, test tone, repeated stream open/close). Module control written, untested until the EC25 is fitted. |
-| Next | The EC25-EUX is on order. Then: `koppar-lte-modem setup`, the first call and text. |
+| Board | Rev B: built; works with the EC25-EUX fitted: calls, texts and call audio ([results](#built-and-tested)). Board 1 needs its module's USB pins reflowed. |
+| Firmware | USB sound card carrying call audio both ways, module power and reset, LEDs, updates over USB. |
+| Software | [`host/`](host): the command line and daemon, and Koppar Phone for macOS (menu bar, call panel, texts, voicemail). Releases build it for macOS and Linux. |
+| Next | Rev C ([`REV-C.md`](REV-C.md)): recovery buttons, the SIM drawn on the board, the module placed by the assembler, signed firmware updates. VoLTE on the module. |
 
 VoLTE is optional on the EC25-EUX. Where 2G and 3G are switched off, calls need a
 module firmware with VoLTE and a carrier that allows it; ask the seller.

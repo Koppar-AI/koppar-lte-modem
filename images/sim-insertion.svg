@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 800" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <title>Koppar LTE modem rev B: inserting the nano-SIM</title>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c62828"/>
+    </marker>
+    <pattern id="gold" width="6" height="6" patternUnits="userSpaceOnUse">
+      <rect width="6" height="6" fill="#e0b84a"/><path d="M0,6 L6,0" stroke="#c99a2e" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1100" height="800" fill="#fbfaf7"/>
+
+  <text x="40" y="44" font-size="24" font-weight="700" fill="#222">Inserting the nano-SIM (rev B, J2: JAE SF72S006, push-push)</text>
+  <text x="40" y="70" font-size="14" fill="#555">Board top view, 85 × 65 mm, to scale (6 px/mm). The card goes in at the bottom edge, gold contacts facing DOWN toward the board.</text>
+
+  <!-- ===== Panel 1: board top view ===== -->
+  <g transform="translate(40,100)">
+    <!-- board 85x65 mm at 6 px/mm -->
+    <rect x="0" y="0" width="510" height="390" rx="6" fill="#1f5f3a" stroke="#123d25" stroke-width="2"/>
+    <!-- USB-C J1, left edge, y=17.37 -->
+    <rect x="-8" y="86" width="40" height="56" rx="6" fill="#b9bcc0" stroke="#777"/>
+    <text x="40" y="118" font-size="13" fill="#e8f3ea">J1 USB-C</text>
+    <!-- U.FL J3 (x 44.66) and J4 (x 68.32) at top edge -->
+    <circle cx="268" cy="16" r="9" fill="#d9c27a" stroke="#8a7330"/>
+    <circle cx="410" cy="16" r="9" fill="#d9c27a" stroke="#8a7330"/>
+    <text x="240" y="48" font-size="12" fill="#e8f3ea">J3 MAIN</text>
+    <text x="388" y="48" font-size="12" fill="#e8f3ea">J4 DIV</text>
+    <!-- EC25 U8 32x29 mm centred at (49.16, 31.88), rotated 90 -> 29 wide, 32 tall -->
+    <rect x="208" y="95" width="174" height="192" rx="3" fill="#2b2d30" stroke="#111"/>
+    <text x="295" y="185" font-size="16" fill="#ddd" text-anchor="middle">U8</text>
+    <text x="295" y="205" font-size="13" fill="#aaa" text-anchor="middle">EC25-EUX</text>
+    <!-- RP2040 U5 at (19.08, 48.98) -->
+    <rect x="96" y="275" width="42" height="42" fill="#2b2d30"/>
+    <text x="117" y="335" font-size="12" fill="#e8f3ea" text-anchor="middle">U5 RP2040</text>
+    <!-- LEDs D2 D3 D5 at y 53.98 -->
+    <circle cx="224.5" cy="324" r="5" fill="#4caf50"/><circle cx="254.5" cy="324" r="5" fill="#ffb300"/><circle cx="284.5" cy="324" r="5" fill="#2196f3"/>
+    <text x="254" y="346" font-size="11" fill="#e8f3ea" text-anchor="middle">NET RING CALL</text>
+    <!-- J2 socket: board x 61.74..72.94, y 50.65..65.0 -->
+    <rect x="370" y="304" width="67" height="86" fill="#c7cacd" stroke="#6d7175" stroke-width="2"/>
+    <text x="403" y="296" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">J2</text>
+    <!-- slot mouth at the bottom edge -->
+    <rect x="376" y="384" width="55" height="6" fill="#444"/>
+    <!-- card coming in from below: 8.8 x 12.3 mm -> 53 x 74 px, cut corner leading, on the left -->
+    <g transform="translate(377,420)">
+      <path d="M10,0 H49 Q53,0 53,4 V70 Q53,74 49,74 H4 Q0,74 0,70 V10 Z" fill="#f3f3f3" stroke="#333" stroke-width="1.8"/>
+      <rect x="17" y="22" width="18" height="18" fill="#c62828" opacity="0.85"/>
+      <text x="27" y="56" font-size="10" fill="#555" text-anchor="middle">printed</text>
+      <text x="27" y="67" font-size="10" fill="#555" text-anchor="middle">side UP</text>
+    </g>
+    <path d="M372,425 L330,440" stroke="#c62828" stroke-width="1.5" fill="none"/>
+    <text x="326" y="445" font-size="12" fill="#c62828" text-anchor="end" font-weight="700">cut corner</text>
+    <text x="326" y="460" font-size="12" fill="#c62828" text-anchor="end">first, on the left</text>
+    <line x1="403" y1="560" x2="403" y2="500" stroke="#c62828" stroke-width="3" marker-end="url(#ar)"/>
+    <text x="403" y="580" font-size="13" fill="#c62828" text-anchor="middle" font-weight="700">push in, short edge first</text>
+    <text x="0" y="408" font-size="12" fill="#666">bottom edge (y = 65 mm)</text>
+  </g>
+
+
+  <!-- ===== Inset: the nano-SIM, both faces (8.8 x 12.3 mm at 8 px/mm) ===== -->
+  <g transform="translate(40,600)">
+    <text x="0" y="0" font-size="15" font-weight="700" fill="#222">The nano-SIM, cut corner at the top</text>
+    <g transform="translate(0,14)">
+      <path d="M13,0 H66 Q70,0 70,4 V94 Q70,98 66,98 H4 Q0,98 0,94 V13 Z" fill="#f3f3f3" stroke="#333" stroke-width="1.5"/>
+      <rect x="22" y="34" width="24" height="24" fill="#c62828" opacity="0.85"/>
+      <text x="28" y="78" font-size="9" fill="#555" text-anchor="middle">logo</text>
+      <text x="61" y="49" font-size="7" fill="#555" text-anchor="middle" transform="rotate(90 61 49)">serial number</text>
+      <text x="35" y="116" font-size="12" fill="#222" text-anchor="middle">printed side:</text>
+      <text x="35" y="131" font-size="12" fill="#222" text-anchor="middle">UP, from above</text>
+    </g>
+    <g transform="translate(130,14)">
+      <path d="M4,0 H57 L70,13 V94 Q70,98 66,98 H4 Q0,98 0,94 V4 Q0,0 4,0 Z" fill="url(#gold)" stroke="#333" stroke-width="1.5"/>
+      <path d="M2,40 H68 M2,58 H68 M24,2 V40 M46,2 V40 M24,58 V96 M46,58 V96" stroke="#7a5c14" stroke-width="1.4" fill="none"/>
+      <text x="13" y="24" font-size="9" fill="#3d2d08" text-anchor="middle">C5</text>
+      <text x="35" y="24" font-size="9" fill="#3d2d08" text-anchor="middle">C6</text>
+      <text x="56" y="24" font-size="9" fill="#3d2d08" text-anchor="middle">C7</text>
+      <text x="13" y="81" font-size="9" fill="#3d2d08" text-anchor="middle">C1</text>
+      <text x="35" y="81" font-size="9" fill="#3d2d08" text-anchor="middle">C2</text>
+      <text x="56" y="81" font-size="9" fill="#3d2d08" text-anchor="middle">C3</text>
+      <text x="35" y="116" font-size="12" fill="#222" text-anchor="middle">contact side:</text>
+      <text x="35" y="131" font-size="12" fill="#222" text-anchor="middle">DOWN, on the board</text>
+    </g>
+  </g>
+
+  <!-- ===== Panel 2: side view ===== -->
+  <g transform="translate(620,110)">
+    <text x="0" y="0" font-size="17" font-weight="700" fill="#222">Side view, from the right</text>
+    <!-- pcb -->
+    <rect x="0" y="120" width="420" height="16" fill="#1f5f3a"/>
+    <text x="10" y="155" font-size="12" fill="#555">PCB</text>
+    <!-- socket -->
+    <rect x="40" y="96" width="200" height="24" fill="#c7cacd" stroke="#6d7175"/>
+    <text x="140" y="90" font-size="12" fill="#555" text-anchor="middle">J2 (1.25 mm tall)</text>
+    <!-- contact springs -->
+    <path d="M110,120 q8,-14 16,-2 M150,120 q8,-14 16,-2" stroke="#c99a2e" stroke-width="2.5" fill="none"/>
+    <!-- card arriving from the right (board edge on the right in this view) -->
+    <rect x="250" y="102" width="130" height="10" fill="#f3f3f3" stroke="#555"/>
+    <rect x="254" y="111" width="122" height="4" fill="url(#gold)" stroke="#a07a20" stroke-width="0.5"/>
+    <text x="315" y="96" font-size="12" fill="#333" text-anchor="middle">nano-SIM</text>
+    <text x="315" y="178" font-size="12" font-weight="700" fill="#a07a20" text-anchor="middle">gold contacts face DOWN</text>
+    <line x1="315" y1="166" x2="310" y2="117" stroke="#a07a20" stroke-width="1"/>
+    <line x1="400" y1="107" x2="262" y2="107" stroke="#c62828" stroke-width="3" marker-end="url(#ar)"/>
+    <text x="420" y="155" font-size="12" fill="#666" text-anchor="end">board edge →</text>
+  </g>
+
+  <!-- ===== Steps ===== -->
+  <g transform="translate(620,320)" font-size="15" fill="#222">
+    <text x="0" y="0" font-size="17" font-weight="700">Steps</text>
+    <text x="0" y="32">1. Antennas on J3 and J4 first: a SIM lets the module transmit.</text>
+    <text x="0" y="58">2. Unplug USB (or <tspan font-family="Menlo, monospace" font-size="13">koppar-lte-modem power off</tspan>).</text>
+    <text x="0" y="84">3. Snap out the nano size. Gold contacts down, printed side up.</text>
+    <text x="0" y="110">4. Short edge first, at the bottom edge, into J2.</text>
+    <text x="0" y="136">5. Push until it clicks and stays in.</text>
+    <text x="0" y="162">6. To remove: push once more, it springs out 3.9 mm.</text>
+    <text x="0" y="200" font-weight="700" fill="#c62828">Cut corner: goes in first, on the left (seen from above).</text>
+    <text x="0" y="224" font-size="14" fill="#444">Contacts cover nearly all of the underside; the cut corner is</text>
+    <text x="0" y="244" font-size="14" fill="#444">the only cue. J2's contacts: C1 front right, C5 back right; on</text>
+    <text x="0" y="264" font-size="14" fill="#444">the card (ISO 7816-2) the cut corner is next to C7. The socket</text>
+    <text x="0" y="284" font-size="14" fill="#444">won't latch a card the wrong way round: no click means take</text>
+    <text x="0" y="304" font-size="14" fill="#444">it out and re-check. Never force it.</text>
+  </g>
+
+  <text x="40" y="785" font-size="12" fill="#888">Positions from board/koppar-lte-modem.kicad_pcb (J2 at 66.36, 59.94, 180°); socket: JAE SF72 series, MB-0282-2; contacts: ISO/IEC 7816-2.</text>
+</svg>

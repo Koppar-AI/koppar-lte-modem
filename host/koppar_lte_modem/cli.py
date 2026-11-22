@@ -62,7 +62,7 @@ def cmd_status(args, link: Link):
             sig = m.signal()
             out["signal"] = f"{sig.get('rssi_dbm')} dBm ({sig.get('bars', 0)}/4)" if sig.get("rssi_dbm") else "none"
             if "rsrp" in sig:
-                out["lte"] = f"RSRP {sig['rsrp']} dBm, RSRQ {sig.get('rsrq')} dB, SINR {sig.get('sinr')}"
+                out["lte"] = f"RSRP {sig['rsrp']} dBm, RSRQ {sig.get('rsrq')} dB, SINR {sig.get('sinr')} dB"
             calls = m.calls()
             out["calls"] = ", ".join(f"{c.direction} {c.number} {c.state}" for c in calls) or "none"
         except (ATError, TransportError) as e:
@@ -161,7 +161,8 @@ def cmd_sms(args, link):
 
         def human(ms):
             for s in ms:
-                print(f"[{s.index}] {s.status:<10} {s.number:<16} {s.time}")
+                slots = f"[{s.index}]" if len(s.parts) <= 1 else f"[{'+'.join(map(str, s.parts))}]"
+                print(f"{slots} {s.status:<10} {s.number:<16} {s.time}")
                 print(f"    {s.text}")
             if not ms:
                 print("no messages")
@@ -172,9 +173,10 @@ def cmd_sms(args, link):
     elif args.action == "delete":
         if args.index == "all":
             m.delete_all_sms()
+            print("deleted all")
         else:
-            m.delete_sms(int(args.index))
-        print("deleted")
+            slots = m.delete_message(int(args.index))
+            print(f"deleted {'slot' if len(slots) == 1 else 'slots'} {', '.join(map(str, slots))}")
 
 
 def cmd_call(args, link):
@@ -329,7 +331,34 @@ def cmd_daemon(args, _link):
     from .daemon import Daemon
 
     Daemon(hooks=args.on_event, json_out=args.json, power_on=not args.no_power_on,
-           delete_sms=args.delete_sms, pin=args.pin).run()
+           delete_sms=args.delete_sms, pin=args.pin, ui_port=None if args.no_ui else args.ui_port,
+           popup=not args.no_popup).run()
+
+
+def cmd_ui(args, _link):
+    from .daemon_ui import open_ui
+    from .store import Store
+    from .web import ui_url
+
+    import urllib.request
+
+    if DaemonLink.connect() is None:
+        sys.exit("koppar-lte-modem daemon is not running: start it first (koppar-lte-modem daemon)")
+    # A one-time launch code, not the master token: URLs end up in browser history.
+    req = urllib.request.Request(f"http://127.0.0.1:{args.port}/api/launch", method="POST", data=b"{}",
+                                 headers={"X-Koppar-Token": Store().ui_token(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            code = json.loads(r.read())["launch"]
+    except OSError as e:
+        sys.exit(f"the daemon's UI isn't answering on port {args.port}: {e}")
+    url = ui_url(args.port, code)
+    if args.print:
+        print(url)
+        print("(works once, within 60 s)", file=sys.stderr)
+    else:
+        open_ui(url)
+        print(f"opened http://127.0.0.1:{args.port}/")
 
 
 def cmd_events(args, _link):
@@ -461,7 +490,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-power-on", action="store_true", help="don't switch the module on")
     s.add_argument("--delete-sms", action="store_true", help="delete each incoming SMS after reporting it")
     s.add_argument("--pin", help="SIM PIN to enter if the SIM asks for one")
+    s.add_argument("--ui-port", type=int, default=8025, help="port for the UI on 127.0.0.1 (default 8025)")
+    s.add_argument("--no-ui", action="store_true", help="don't serve the UI")
+    s.add_argument("--no-popup", action="store_true", help="no notification or window on incoming calls")
     s.set_defaults(fn=cmd_daemon)
+
+    s = sub.add_parser("ui", help="open the UI of the running daemon in a browser")
+    s.add_argument("--port", type=int, default=8025)
+    s.add_argument("--print", action="store_true", help="print a one-time URL instead of opening it")
+    s.set_defaults(fn=cmd_ui)
 
     sub.add_parser("events", help="print the daemon's events as they happen").set_defaults(fn=cmd_events)
     return p

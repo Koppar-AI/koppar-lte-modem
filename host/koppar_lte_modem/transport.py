@@ -79,6 +79,14 @@ def _libusb_backend():
     import usb.backend.libusb1
 
     def find(name):
+        if os.environ.get("KOPPAR_LIBUSB"):
+            return os.environ["KOPPAR_LIBUSB"]
+        # The standalone build (PyInstaller) carries its own libusb.
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle:
+            for f in ("libusb-1.0.0.dylib", "libusb-1.0.dylib"):
+                if os.path.exists(os.path.join(bundle, f)):
+                    return os.path.join(bundle, f)
         found = ctypes.util.find_library(name)
         if found:
             return found
