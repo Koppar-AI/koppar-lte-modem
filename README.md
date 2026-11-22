@@ -61,6 +61,12 @@ transmit bursts, and 3.3 V for the hub, the RP2040 and its flash.
 
 The [schematic](images/schematic.png) is also in [PDF](board/fab/schematic.pdf).
 
+On a Mac, **Koppar Phone** puts the line in the menu bar: texts, calls on the
+computer's microphone and speakers, voicemail, and the network in detail
+([more](host/README.md#koppar-phone-the-menu-bar-app-macos)).
+
+![Koppar Phone: the menu-bar panel over the full window, on the calls page (phone numbers blurred)](images/koppar-phone.png)
+
 ## What is here
 
 | Path | What it is |

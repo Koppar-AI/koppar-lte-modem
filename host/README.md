@@ -40,6 +40,13 @@ over a Unix socket, and the EC25 needs Quectel's Windows drivers.
 - It starts `koppar-lte-modem daemon` itself and stops it when you quit.
   History lives in `~/Library/Application Support/koppar-lte-modem`.
 
+| Calls | Voicemail | Network |
+|---|---|---|
+| ![Calls: dial pad and call log, with a recorded call](../images/app-calls.png) | ![Voicemail: messages, greeting, the operator's voicemail](../images/app-voicemail.png) | ![Network: six hours of signal, cell details, USSD, operator scan](../images/app-network.png) |
+
+The screenshots use made-up people and numbers: `tools/demo.py` runs the real
+UI on a simulated modem, no board needed.
+
 Build it yourself with the Command Line Tools: `macos/build.sh` (see the top
 of the script). Without the app, `koppar-lte-modem daemon` serves the same
 interface on 127.0.0.1:8025 and `koppar-lte-modem ui` opens it in a browser.

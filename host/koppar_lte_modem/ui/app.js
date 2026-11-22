@@ -254,7 +254,12 @@ function go(view, arg) {
 async function load(view) {
   try {
     if (view === "overview") { [S.signal] = await Promise.all([GET("/api/signal?hours=6")]); if (!S.events.length) S.events = await GET("/api/events?limit=200"); }
-    if (view === "messages") { await loadThreads(); if (S.sel && S.sel !== "__new") S.convo = await GET("/api/messages?number=" + encodeURIComponent(S.sel)); if (S.starred) S.convo = await GET("/api/messages?starred=1"); }
+    if (view === "messages") {
+      // The conversation first: opening it marks it read, which the list then shows.
+      if (S.sel && S.sel !== "__new") S.convo = await GET("/api/messages?number=" + encodeURIComponent(S.sel));
+      if (S.starred) S.convo = await GET("/api/messages?starred=1");
+      await loadThreads();
+    }
     if (view === "calls") S.calls = await GET("/api/calls");
     if (view === "voicemail") { S.voicemails = await GET("/api/voicemail"); S.settings = await GET("/api/settings"); }
     if (view === "events") S.events = await GET("/api/events?limit=300" + (S.evKind ? "&kind=" + S.evKind : ""));
