@@ -218,9 +218,9 @@ final class EventStream {
 
     private func connect() async throws {
         guard let tok = Config.token() else { throw APIError.noToken }
-        var comps = URLComponents(url: Config.base.appendingPathComponent("api/stream"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "token", value: tok)]
-        let (bytes, resp) = try await API.session.bytes(for: URLRequest(url: comps.url!))
+        var req = URLRequest(url: Config.base.appendingPathComponent("api/stream"))
+        req.setValue(tok, forHTTPHeaderField: "X-Koppar-Token")    // a header: keys never go in URLs
+        let (bytes, resp) = try await API.session.bytes(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.http("stream refused") }
         await MainActor.run { Model.shared.live = true; Model.shared.note = nil }
         await Model.shared.refresh()
@@ -537,9 +537,10 @@ struct CallView: View {
 // MARK: - The full window
 
 @MainActor
-final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
+final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     private var window: NSWindow?
     private var web: WKWebView?
+    private var downloads: [ObjectIdentifier: URL] = [:]
 
     func show(_ view: String) {
         let safe = view.filter { $0.isLetter || $0.isNumber || "+:_".contains($0) }
@@ -569,6 +570,7 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
             if window != nil { return }
             let cfg = WKWebViewConfiguration()
             cfg.websiteDataStore = .nonPersistent()
+            cfg.mediaTypesRequiringUserActionForPlayback = []   // Play fetches the audio first, then plays
             let w = WKWebView(frame: .zero, configuration: cfg)
             w.navigationDelegate = self
             w.uiDelegate = self                       // confirm() and prompt() in the page
@@ -598,6 +600,12 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
 
     func windowWillClose(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)         // back to the menu bar only
+        // Reopening starts fresh, with a new launch code: a kept page could hold a
+        // session that has since expired, and would be stuck on the sign-in screen.
+        web?.stopLoading()
+        window?.delegate = nil
+        window = nil
+        web = nil
     }
 
     // The page's confirm(), prompt() and alert(): native dialogs. A web view without
@@ -632,6 +640,37 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
         return await sheet(a) == .alertFirstButtonReturn ? field.stringValue : nil
     }
 
+    // Downloads (a web view has none of its own): into ~/Downloads, then shown in Finder.
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String) async -> URL? {
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        let name = (suggestedFilename as NSString).lastPathComponent        // no paths from the page
+        let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+        var url = dir.appendingPathComponent(name)
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+            n += 1
+        }
+        downloads[ObjectIdentifier(download)] = url
+        return url
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        if let url = downloads.removeValue(forKey: ObjectIdentifier(download)) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        downloads.removeValue(forKey: ObjectIdentifier(download))
+        Model.shared.note = "Download failed: \(error.localizedDescription)"
+    }
+
     private func sheet(_ a: NSAlert) async -> NSApplication.ModalResponse {
         guard let w = window else { return a.runModal() }
         return await withCheckedContinuation { c in a.beginSheetModal(for: w) { c.resume(returning: $0) } }
@@ -641,6 +680,7 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
     // and only if it's http(s): no file:, custom-scheme or app-opening URLs.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let url = action.request.url else { return .cancel }
+        if action.shouldPerformDownload { return .download }   // <a download>: Export JSON
         if url.scheme == "blob" || (url.scheme == "http" && url.host == "127.0.0.1" && url.port == Config.port) {
             return .allow
         }
