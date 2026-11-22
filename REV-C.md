@@ -57,6 +57,12 @@ from the design review ([`REVIEW.md`](REVIEW.md#still-open)) are folded in.
 - **Supply margin.** +3V8 read 3.90 V unloaded and 3.81 V under the module (its own `AT+CBC`): fine.
   The board still needs a 3 A USB-C port (5.1 kΩ CC resistors negotiate nothing); consider more
   bulk capacitance on +3V8, or USB PD, so a 1.5 A port survives a 2G burst.
+- **Let the module shut down after the cable is pulled.** Rev B cuts the EC25's
+  power the instant USB goes away, mid-write if it's unlucky. Rev C: sense VBUS
+  on an RP2040 pin (a divider), and hold +3V8 up for a few seconds (a
+  supercapacitor of about 1 F behind an ideal diode: the EC25 needs a few
+  seconds at a few hundred mA to shut down), so the firmware can press PWRKEY
+  for a clean power-off when VBUS drops.
 
 ## USB
 

@@ -149,6 +149,24 @@ stream `CallAudio` to your speech-to-text and from your text-to-speech.
 PYTHONPATH=tests .venv/bin/python -m pytest tests
 ```
 
+## Unplugging the board
+
+The module runs a small file system on its flash. Cutting its power while it
+writes can damage it, and the board has no energy store to finish the job, so:
+
+- **Switch off first**: Koppar Phone's panel (Switch off) or the Device page.
+  The module logs off the network and shuts down in a few seconds; then it's
+  safe to unplug. It stays off until you switch it on (or plug it back in).
+- **Shutting the Mac down** (or restarting, or logging out) does this for you:
+  Koppar Phone switches the modem off before the Mac cuts USB power.
+- **Texts are kept on the SIM**, not in the module's flash, so a new text
+  doesn't mean a flash write; once the SIM is nearly full, texts already
+  archived on the computer are removed from it.
+- **Unplugging anyway**: nothing breaks on the computer. The daemon notices,
+  says so (the panel shows "Board unplugged"), and picks the board up again
+  when it's back. Calls meanwhile go to your operator's voicemail, and texts
+  wait on the network.
+
 ## Security
 
 - **Your data stays yours.** Texts, calls, recordings and voicemail live in

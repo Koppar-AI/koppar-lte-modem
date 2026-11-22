@@ -182,6 +182,9 @@ function describe(ev) {
     case "module_on": return "Module switched on";
     case "module_off": return "Module switched off";
     case "modem_disconnected": return "Modem left USB";
+    case "board_disconnected": return "Board unplugged";
+    case "module_switched_off": return `Modem switched off cleanly in ${d.seconds} s: safe to unplug`;
+    case "daemon_error": return `Daemon: ${d.message}`;
     case "ussd": return `USSD (${d.status}): ${d.text}`;
     case "ussd_sent": return `USSD sent: ${d.code}`;
     case "voicemail": return `Voicemail from ${nameOf(d.number)} (${Math.round(d.seconds)} s)`;
@@ -226,7 +229,11 @@ function renderTop() {
   const st = S.state || {};
   const net = st.network || {}, sig = st.signal || {};
   const chips = [
-    h("span", { class: "chip" }, h("span", { class: "dot " + (st.modem ? "good" : "bad") }), st.modem ? "Modem" : "No modem"),
+    !st.board && S.state ? h("span", { class: "chip" }, h("span", { class: "dot bad" }), "Board unplugged")
+      : st.module_off ? h("span", { class: "chip" }, h("span", { class: "dot warn" }), "Modem off · safe to unplug")
+      : !st.modem && ["starting", "on"].includes(st.module_power) ? h("span", { class: "chip" }, h("span", { class: "dot warn" }), "Modem starting…")
+      : !st.modem && st.module_power === "stopping" ? h("span", { class: "chip" }, h("span", { class: "dot warn" }), "Modem switching off…")
+      : h("span", { class: "chip" }, h("span", { class: "dot " + (st.modem ? "good" : "bad") }), st.modem ? "Modem" : "No modem"),
     h("span", { class: "chip" }, h("span", { class: "dot " + (st.sim === "READY" ? "good" : st.sim ? "warn" : "") }), "SIM " + (st.sim || "–")),
   ];
   if (net.operator || net.state) chips.push(h("span", { class: "chip" }, h("span", { class: "dot " + (net.registered ? "good" : "warn") }),
@@ -871,9 +878,16 @@ function device() {
           : h("div", { class: "faint", text: d.board_error || "Board not connected." })),
       h("section", { class: "card stack" }, h("h2", { text: "Power" }),
         h("div", { class: "row wrap" },
-          h("button", { class: "btn", onclick: () => board("power on") }, "Switch on"),
+          h("button", { class: "btn", onclick: () => act(() => POST("/api/module/on"), "Switching on…").then(() => load("device")).then(renderView) }, "Switch on"),
           h("button", { class: "btn", onclick: () => at("AT+CFUN=1,1", "Restart the module? It leaves USB for about 20 s; calls end.") }, "Restart"),
-          h("button", { class: "btn bad", onclick: () => at("AT+QPOWD=1", "Switch the module off? Calls end and texts won't arrive until it's back on.") }, "Switch off")),
+          h("button", { class: "btn bad", onclick: async () => {
+            if (!confirm("Switch the modem off? Calls end; calls go to your operator's voicemail and texts wait until it's back on.")) return;
+            toast("Switching off cleanly…");
+            const r = await act(() => POST("/api/module/off"));
+            if (r) toast(r.safe_to_unplug ? `Off in ${r.seconds} s: safe to unplug` : "Still on after 40 s", !r.safe_to_unplug);
+            await load("device"); renderView();
+          } }, "Switch off")),
+        h("p", { class: "faint small", text: "Switch off before unplugging the board: cutting power to a running modem can damage its file system." }),
         h("label", { class: "switch" }, h("input", { type: "checkbox", checked: b.autopower === "1", onchange: e => board("autopower " + (e.target.checked ? "on" : "off")) }), "Switch on by itself at plug-in")),
       h("section", { class: "card stack" }, h("h2", { text: "LEDs and audio" }),
         [["net", "NET (green)"], ["ring", "RING (amber)"], ["call", "CALL (blue)"]].map(([led, label]) => h("label", { class: "row" }, h("span", { class: "grow", text: label }),
@@ -937,13 +951,15 @@ async function onEvent(ev) {
     } else if (ev.event === "scan") { const { event, ui, ...st } = ev; S.scan = st; if (S.view === "network") renderView();
       if (st.state === "done") toast(`Scan done: ${st.operators.length} operator${st.operators.length === 1 ? "" : "s"}`);
     } else if (ev.event === "voicemail_heard") { await refreshState(); renderNav(); if (S.view === "voicemail") { S.voicemails = await GET("/api/voicemail"); renderView(); }
+    } else if (ev.event === "module_power") { refreshState();
     } else if (ev.event === "read") { await loadThreads(); renderNav(); if (S.view === "messages") renderView();
     } else if (ev.event === "bridge") { if (ev.error) toast("Mac audio: " + ev.error, true); refreshState(); }
     return;
   }
   S.events.unshift({ id: ev.id, time: ev.time, event: ev.event, data: Object.fromEntries(Object.entries(ev).filter(([k]) => !["id", "time", "event"].includes(k))) });
   if (S.events.length > 1000) S.events.length = 1000;
-  if (["ring", "incoming_call", "call_state", "call_ended", "call_audio", "ready", "module_on", "module_off", "network", "modem_disconnected"].includes(ev.event)) refreshState();
+  if (["ring", "incoming_call", "call_state", "call_ended", "call_audio", "ready", "module_on", "module_off", "network",
+       "modem_disconnected", "board_disconnected", "module_switched_off"].includes(ev.event)) refreshState();
   if (ev.event === "incoming_call") { S.callMin = false; notifyDesktop("Incoming call", nameOf(ev.number)); }
   if (ev.event === "voicemail") { toast(`New voicemail from ${nameOf(ev.number)}`); await refreshState(); renderNav(); if (S.view === "voicemail") { S.voicemails = await GET("/api/voicemail"); renderView(); } }
   if (ev.event === "voicemail_waiting" && ev.active) toast("Your operator's voicemail has new messages");

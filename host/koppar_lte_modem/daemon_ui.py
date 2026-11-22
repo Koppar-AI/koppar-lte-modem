@@ -121,7 +121,7 @@ class UIMixin:
     def at_logged(self, cmd: str, timeout: float = 5.0, data: str | None = None, source: str | None = None):
         if not (self.at and self.at.alive):
             raise ATError(cmd, "modem not connected (yet)")
-        source = source or getattr(self._tl, "source", "daemon")
+        source = source or getattr(self._tl, "source", None) or "daemon"
         t0 = time.monotonic()
         try:
             lines = self.at.command(cmd, timeout=timeout, data=data)
@@ -198,7 +198,7 @@ class UIMixin:
                     self.ui_bridge(True)
             elif kind == "call_ended":
                 self._call_end(ev["time"])
-            elif kind in ("modem_disconnected", "module_off"):
+            elif kind in ("modem_disconnected", "module_off", "board_disconnected"):
                 self._call_end(ev["time"])
         except Exception as e:
             log.exception("UI handling of %s: %s", kind, e)
@@ -220,7 +220,9 @@ class UIMixin:
         if mid is None:                              # reported before: already archived and handled
             return
         self.push("message", id=mid, number=number, name=self.store.contact_name(number), text=text)
-        if settings.get("archive_delete_from_module") and not self.delete_sms:
+        if not self.delete_sms and (settings.get("archive_delete_from_module") or self._storage_nearly_full()):
+            # Archived here: free its slot (always, once the SIM is nearly full, so new
+            # texts still have somewhere to land).
             for i in ev.get("parts") or []:
                 try:
                     self.modem.delete_sms(i)
@@ -239,6 +241,13 @@ class UIMixin:
 
     AUTO_TEXTS_PER_HOUR = 30     # forwards + auto-replies: a flood of (spoofed) texts can't
                                  # turn the line into a sender of hundreds of messages
+
+    def _storage_nearly_full(self) -> bool:
+        try:
+            st = self._as("daemon", self.modem.sms_storage)
+        except ATError:
+            return False
+        return bool(st) and st[2] > 0 and st[1] >= st[2] - 3
 
     def _send_auto(self, number: str, text: str, why: str) -> None:
         now = time.time()
@@ -481,6 +490,34 @@ class UIMixin:
 
     # ---- device and state -------------------------------------------------------
 
+    def ui_module_off(self) -> dict:
+        """Shut the module down cleanly, and keep it off until ui_module_on: then the
+        board can be unplugged without cutting power to a running module."""
+        if not self.board:
+            raise web.ApiError(503, "board not connected")
+        self.held_off = True
+        t0 = time.monotonic()
+        try:
+            if self.at and self.at.alive:
+                self._as("daemon", self.modem.power_down)       # AT+QPOWD: logs off, saves, stops
+            else:
+                self.board.command("power off")                 # PWRKEY: the module's own shutdown
+        except ATError:
+            self.board.command("power off")
+        while time.monotonic() - t0 < 40:                       # the EC25 allows up to 35 s
+            if self.board.status().get("module") == "off":
+                self.emit("module_switched_off", seconds=round(time.monotonic() - t0, 1))
+                return {"off": True, "safe_to_unplug": True, "seconds": round(time.monotonic() - t0, 1)}
+            time.sleep(0.5)
+        return {"off": False, "safe_to_unplug": False}
+
+    def ui_module_on(self) -> dict:
+        if not self.board:
+            raise web.ApiError(503, "board not connected")
+        self.held_off = False
+        self.board.command("power on")
+        return {"on": True}
+
     def ui_board(self, cmd: str) -> list[str]:
         if not self.board:
             raise web.ApiError(503, "board not connected")
@@ -528,6 +565,8 @@ class UIMixin:
             "bridge": bridged,
             "recording": self._recorder is not None,
             "windows": windows,
+            "module_off": self.held_off,
+            "module_power": self.module_power,
             "voicemail_new": self.store.new_voicemails(),
             "voicemail_busy": self.voicemail_busy,
             "voicemail_waiting": self.operator_voicemail(),

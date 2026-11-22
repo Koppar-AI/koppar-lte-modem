@@ -213,6 +213,29 @@ class Modem:
             except ATError:
                 pass
 
+    def sms_storage(self) -> tuple[str, int, int] | None:
+        """Where received texts are stored: (memory, used, total), e.g. ("SM", 4, 50)."""
+        v = self._value("AT+CPMS?", "+CPMS")
+        if not v:
+            return None
+        f = split_fields(v)
+        try:
+            return f[6], int(f[7]), int(f[8])          # <mem3>: where new texts go
+        except (IndexError, ValueError):
+            return None
+
+    def store_texts_on_sim(self) -> bool:
+        """Keep received texts on the SIM, not in the module's flash: one less thing
+        written to the module's file system, which a power cut can damage."""
+        cur = self.sms_storage()
+        if cur and cur[0] == "SM":
+            return True
+        try:
+            self.at('AT+CPMS="SM","SM","SM"')
+            return True
+        except ATError:
+            return False                               # a SIM without SMS storage: leave it
+
     def setup(self, rate: int = 8000) -> dict:
         """One-time module settings (saved in its NV). Returns what changed;
         'reboot_needed' is True if the module must restart to apply them."""

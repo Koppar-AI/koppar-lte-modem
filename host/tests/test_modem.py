@@ -192,3 +192,38 @@ def test_daemon_reports_a_long_text_once(rig):
     sms = [f for e, f in events if e == "sms"]
     assert len(sms) == 1
     assert (sms[0]["number"], sms[0]["text"], sms[0]["parts"]) == ("MyShop", whole, [5, 6])
+
+
+def test_daemon_survives_the_board_being_unplugged(monkeypatch, tmp_path):
+    # Unplugging made the board's serial calls raise, and the daemon died with them.
+    import koppar_lte_modem.daemon as dm
+    from koppar_lte_modem.board import BoardGone
+
+    monkeypatch.setenv("KOPPAR_SOCKET", str(tmp_path / "d.sock"))   # never the real daemon's socket
+    made, events = [], []
+
+    class UnpluggedBoard:
+        def __init__(self, on_event=None):
+            made.append(self)
+            self.port = "test"
+            if len(made) == 2:
+                d.stop.set()                        # plugged back in: that's the whole test
+
+        def status(self):
+            raise BoardGone("the board left USB (test)")
+
+        def command(self, cmd, timeout=3.0):
+            raise BoardGone("the board left USB (test)")
+
+        def poll_events(self, timeout=0.0):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(dm, "Board", UnpluggedBoard)
+    d = dm.Daemon(json_out=True, popup=False, ui_port=None)
+    d.emit = lambda ev, **f: events.append(ev)
+    monkeypatch.setattr(d, "_serve", lambda: None)
+    d.run()                                         # returns instead of raising
+    assert events == ["board_disconnected"] and len(made) == 2

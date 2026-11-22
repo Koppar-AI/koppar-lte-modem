@@ -353,6 +353,16 @@ def _board(d, m, q, b):
     return {"lines": d.ui_board(cmd.strip())}
 
 
+@route("POST", "/api/module/off")
+def _module_off(d, m, q, b):
+    return d.ui_module_off()
+
+
+@route("POST", "/api/module/on")
+def _module_on(d, m, q, b):
+    return d.ui_module_on()
+
+
 @route("GET", "/api/device")
 def _device(d, m, q, b):
     return d.ui_device()
