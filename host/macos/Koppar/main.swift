@@ -124,6 +124,10 @@ final class Model: ObservableObject {
     @Published var recording = false
     @Published var threads: [ThreadInfo] = []
     @Published var unread = 0
+    @Published var board = true
+    @Published var moduleOff = false
+    @Published var modulePower = "off"
+    @Published var switching = false
     @Published var voicemailNew = 0
     @Published var operatorVoicemail = false
     @Published var voicemailBusy = false
@@ -133,6 +137,9 @@ final class Model: ObservableObject {
 
     func apply(state s: [String: Any]) {
         modem = s["modem"] as? Bool ?? false
+        board = s["board"] as? Bool ?? false
+        moduleOff = s["module_off"] as? Bool ?? false
+        modulePower = s["module_power"] as? String ?? "off"
         sim = s["sim"] as? String
         let net = s["network"] as? [String: Any] ?? [:]
         op = net["operator"] as? String
@@ -186,15 +193,34 @@ final class Model: ObservableObject {
         if ev["ui"] as? Bool == true {
             switch kind {
             case "signal": applySignal(ev)
-            case "message", "bridge", "read", "voicemail_heard": await refresh()
+            case "message", "bridge", "read", "voicemail_heard", "module_power": await refresh()
             default: break
             }
             return
         }
         let refreshOn: Set = ["ring", "incoming_call", "call_state", "call_ended", "call_audio", "ready", "module_on",
                               "module_off", "network", "modem_disconnected", "sms_sent", "sms", "voicemail",
-                              "voicemail_answered", "voicemail_waiting", "voicemail_failed"]
+                              "voicemail_answered", "voicemail_waiting", "voicemail_failed",
+                              "board_disconnected", "module_switched_off", "daemon_error"]
         if refreshOn.contains(kind) { await refresh() }
+    }
+
+    func toggleModule() {
+        if moduleOff {
+            act("/api/module/on")
+            return
+        }
+        switching = true
+        Task {
+            do {
+                let r = try await API.call("/api/module/off", "POST", [:], timeout: 45) as? [String: Any]
+                note = (r?["safe_to_unplug"] as? Bool ?? false) ? "Modem off: safe to unplug the board." : "The modem didn't switch off."
+            } catch {
+                note = error.localizedDescription
+            }
+            switching = false
+            await refresh()
+        }
     }
 
     func act(_ path: String, _ body: [String: Any] = [:]) {
@@ -364,7 +390,11 @@ struct PopoverView: View {
             HStack(spacing: 10) {
                 Bars(n: m.bars)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text([m.op, m.tech].compactMap { $0 }.joined(separator: " · ").ifEmpty(m.modem ? "Searching…" : "No modem"))
+                    Text(!m.board && m.live ? "Board unplugged"
+                         : m.moduleOff ? "Modem off · safe to unplug"
+                         : !m.modem && (m.modulePower == "starting" || m.modulePower == "on") ? "Modem starting…"
+                         : !m.modem && m.modulePower == "stopping" ? "Modem switching off…"
+                         : [m.op, m.tech].compactMap { $0 }.joined(separator: " · ").ifEmpty(m.modem ? "Searching…" : "No modem"))
                         .font(.system(size: 13, weight: .medium))
                     Text(signalLine).font(.caption).foregroundColor(.secondary)
                 }
@@ -447,6 +477,11 @@ struct PopoverView: View {
                     } catch { m.note = "Login item: \(error.localizedDescription)" }
                 })).toggleStyle(.checkbox).font(.caption)
                 Spacer()
+                if m.board {
+                    Button(m.switching ? "Switching off…" : m.moduleOff ? "Switch on" : "Switch off") { m.toggleModule() }
+                        .font(.caption).buttonStyle(.link).disabled(m.switching)
+                        .help(m.moduleOff ? "Switch the modem on" : "Shut the modem down cleanly: then it's safe to unplug the board")
+                }
                 Button("Quit") { NSApp.terminate(nil) }.font(.caption).buttonStyle(.link)
             }
         }
@@ -754,8 +789,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var observer: Any?
     private var blink = false
     private var blinkTimer: Timer?
+    private var systemPoweringOff = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Shut down, restart or log out: the Mac cuts USB power moments later.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemPoweringOff = true }
+        }
         NSApp.setActivationPolicy(.accessory)
         NSApp.mainMenu = mainMenu()
 
@@ -777,6 +818,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await daemon.ensure()
             streamTask = Task.detached { await EventStream().run() }
         }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Before the Mac powers off (and USB power with it), shut the modem down cleanly,
+        // so its file system isn't cut mid-write. A plain Quit leaves the modem as it is.
+        guard systemPoweringOff, Model.shared.board, !Model.shared.moduleOff else { return .terminateNow }
+        Task { @MainActor in
+            _ = try? await API.call("/api/module/off", "POST", [:], timeout: 40)
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

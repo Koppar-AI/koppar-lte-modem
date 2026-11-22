@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 
 from .at import ATChannel, ATError, ATTimeout
-from .board import Board, BoardError
+from .board import Board, BoardError, BoardGone
 from .link import socket_path
 from .daemon_ui import UIMixin, VoicemailMixin
 from .modem import Modem, merge_parts, split_fields
@@ -58,6 +58,8 @@ class Daemon(UIMixin, VoicemailMixin):
         self.announced_incoming = False
         self.network: dict | None = None
         self.server: socketserver.ThreadingUnixStreamServer | None = None
+        self.held_off = False        # switched off on purpose: don't power the module back on
+        self.module_power = "off"    # off, starting, on, stopping: from the board (STATUS, PWRKEY)
         self._ui_init(ui_port, popup, store)
 
     # ---- events ----------------------------------------------------------
@@ -87,9 +89,17 @@ class Daemon(UIMixin, VoicemailMixin):
     # ---- hardware --------------------------------------------------------
 
     def _board_event(self, ev: str) -> None:
-        if ev == "status on":
+        if ev in ("power on", "reset"):
+            self.module_power = "starting"
+            self.push("module_power", state="starting")
+        elif ev == "power off":
+            self.module_power = "stopping"
+            self.push("module_power", state="stopping")
+        elif ev == "status on":
+            self.module_power = "on"
             self.emit("module_on")
         elif ev == "status off":
+            self.module_power = "off"
             self.emit("module_off")
         elif ev in ("pcm on", "pcm off"):
             self.emit("call_audio", active=ev == "pcm on")
@@ -104,18 +114,23 @@ class Daemon(UIMixin, VoicemailMixin):
             pass
 
     def _open_board(self) -> None:
+        waiting = False
         while not self.stop.is_set():
             try:
                 self.board = Board(on_event=self._board_event)
                 log.info("board on %s", self.board.port)
                 return
             except BoardError as e:
-                log.warning("%s; retrying", e)
+                if not waiting:                     # once, not every 3 s
+                    log.warning("waiting for the board: %s", e)
+                    waiting = True
                 self.stop.wait(3)
 
     def _ensure_module_on(self) -> None:
         st = self.board.status()
-        if st.get("module") == "off" and self.power_on:
+        self.module_power = {"on": "on", "off": "off", "powering-off": "stopping",
+                             "shutting-down": "stopping"}.get(st.get("module", ""), "starting")
+        if st.get("module") == "off" and self.power_on and not self.held_off:
             log.info("powering the module on")
             self.board.command("power on")
 
@@ -158,6 +173,8 @@ class Daemon(UIMixin, VoicemailMixin):
             pass
         self.sim_state, self.module_info = sim, info
         self.find_voicemail_number()
+        if sim == "READY" and not m.store_texts_on_sim():
+            log.info("texts stay in the module's memory: the SIM has no room for them")
         self.emit("ready", sim=sim, imei=info.get("imei"), revision=info.get("revision"), via=self.at.transport.name)
 
     # ---- URCs and polling ------------------------------------------------
@@ -337,50 +354,89 @@ class Daemon(UIMixin, VoicemailMixin):
         threading.Thread(target=self._serve, name="koppar-socket", daemon=True).start()
         self._start_ui()
         try:
-            self._open_board()
             while not self.stop.is_set():
-                self._ensure_module_on()
-                if not self._open_at():
+                self._open_board()
+                if self.stop.is_set():
                     break
-                self._start_session()
-                next_net = next_calls = 0.0
-                while not self.stop.is_set() and self.at.alive:
-                    try:
-                        line = self.urcs.get(timeout=0.25)
-                        self._handle_urc(line)
-                    except queue.Empty:
-                        pass
-                    self.board.poll_events(0)
-                    now = time.monotonic()
-                    if now >= next_calls:
-                        self._as("poll", self._poll_calls)
-                        next_calls = now + (1 if (self.calls or self.announced_incoming) else 3)
-                    if now >= next_net:
-                        self._as("poll", self._poll_network)
-                        next_net = now + 15
-                    self._run_scheduled()
-                if not self.stop.is_set():
-                    self.emit("modem_disconnected")
-                    self.calls, self.network = {}, None
-                    self._led("net", "auto")
-                    self._led("ring", "auto")
-                    self.at.close()
-                    self.stop.wait(2)
+                try:
+                    self._board_session()
+                except BoardGone as e:
+                    log.warning("%s", e)
+                    self._board_lost()
+                except Exception:
+                    # Never die: log it, start over (the board and modem are reopened).
+                    log.exception("daemon loop")
+                    self.emit("daemon_error", message="unexpected error; reconnecting (see the log)")
+                    self._board_lost(announce=False)
+                    self.stop.wait(3)
         except KeyboardInterrupt:
             pass
         finally:
-            self._stop_bridge()
-            if self.ui_server:
-                self.ui_server.shutdown()
-            self._led("net", "auto")
-            self._led("ring", "auto")
-            if self.server:
-                self.server.shutdown()
-            try:
-                socket_path().unlink()
-            except OSError:
-                pass
-            if self.at:
+            self._shutdown()
+
+    def _board_lost(self, announce: bool = True) -> None:
+        if announce:
+            self.emit("board_disconnected")
+        self.calls, self.network, self.sim_state, self.last_signal = {}, None, None, None
+        self.announced_incoming = False
+        self.module_power = "off"
+        self.held_off = False                  # plugging the board back in brings the phone back
+        if self.at:
+            self.at.close()
+        if self.board:
+            self.board.close()
+            self.board = None
+        self.stop.wait(1)
+
+    def _board_session(self) -> None:
+        """One board, plugged in: the module, its AT port and the event loop, until the board leaves."""
+        while not self.stop.is_set():
+            if self.held_off:
+                self.board.poll_events(0.5)          # switched off on purpose: wait for "power on"
+                if self.board.status().get("module") != "on":
+                    continue
+                self.held_off = False
+            self._ensure_module_on()
+            if not self._open_at():
+                break
+            self._start_session()
+            next_net = next_calls = 0.0
+            while not self.stop.is_set() and self.at.alive:
+                try:
+                    line = self.urcs.get(timeout=0.25)
+                    self._handle_urc(line)
+                except queue.Empty:
+                    pass
+                self.board.poll_events(0)
+                now = time.monotonic()
+                if now >= next_calls:
+                    self._as("poll", self._poll_calls)
+                    next_calls = now + (1 if (self.calls or self.announced_incoming) else 3)
+                if now >= next_net:
+                    self._as("poll", self._poll_network)
+                    next_net = now + 15
+                self._run_scheduled()
+            if not self.stop.is_set():
+                self.emit("modem_disconnected")
+                self.calls, self.network, self.sim_state, self.last_signal = {}, None, None, None
+                self._led("net", "auto")
+                self._led("ring", "auto")
                 self.at.close()
-            if self.board:
-                self.board.close()
+                self.stop.wait(2)
+
+    def _shutdown(self) -> None:
+        self._stop_bridge()
+        if self.ui_server:
+            self.ui_server.shutdown()
+        self._led("net", "auto")
+        self._led("ring", "auto")
+        if self.server:
+            self.server.shutdown()
+        try:
+            socket_path().unlink()
+        except OSError:
+            pass
+        if self.at:
+            self.at.close()
+        if self.board:
+            self.board.close()

@@ -19,6 +19,10 @@ class BoardError(Exception):
     pass
 
 
+class BoardGone(BoardError):
+    """The board left USB (unplugged): its serial port is gone."""
+
+
 def find_board_port() -> str | None:
     from serial.tools import list_ports
 
@@ -50,12 +54,11 @@ class Board:
     def command(self, cmd: str, timeout: float = 3.0) -> list[str]:
         """Run one command; return its reply lines (without OK). Raises BoardError on ERR."""
         with self._lock:
-            self._s.write((cmd.strip() + "\n").encode())
-            self._s.flush()
+            self._io(lambda: (self._s.write((cmd.strip() + "\n").encode()), self._s.flush()))
             lines: list[str] = []
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                raw = self._s.readline()
+                raw = self._io(self._s.readline)
                 if not raw:
                     continue
                 line = raw.decode("utf-8", "replace").strip()
@@ -78,7 +81,7 @@ class Board:
         try:
             self._s.timeout = max(timeout, 0.01)
             while True:
-                raw = self._s.readline()
+                raw = self._io(self._s.readline)
                 if not raw:
                     break
                 line = raw.decode("utf-8", "replace").strip()
@@ -86,7 +89,10 @@ class Board:
                     self._event(line[2:])
                 self._s.timeout = 0.01
         finally:
-            self._s.timeout = 0.1
+            try:
+                self._s.timeout = 0.1
+            except Exception:
+                pass
             self._lock.release()
 
     def status(self) -> dict[str, str]:
@@ -97,6 +103,16 @@ class Board:
                     k, v = kv.split("=", 1)
                     out[k] = v
         return out
+
+    def _io(self, fn):
+        """Run a serial call; a port that has vanished raises BoardGone, not a raw error."""
+        import serial
+
+        try:
+            return fn()
+        except (serial.SerialException, OSError) as e:
+            self.close()
+            raise BoardGone(f"the board left USB ({e})") from e
 
     def close(self) -> None:
         try:
