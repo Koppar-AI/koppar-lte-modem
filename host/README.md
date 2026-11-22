@@ -142,6 +142,27 @@ stream `CallAudio` to your speech-to-text and from your text-to-speech.
 PYTHONPATH=tests .venv/bin/python -m pytest tests
 ```
 
+## Security
+
+- **Your data stays yours.** Texts, calls, recordings and voicemail live in
+  `~/Library/Application Support/koppar-lte-modem` (Linux:
+  `~/.local/share/koppar-lte-modem`), readable by your user account only.
+- **The UI listens on 127.0.0.1 only**, and every request needs a key: the
+  master token in that folder (for the CLI and the app, sent as a header) or a
+  session. A window opens with a one-time launch code that the page swaps for
+  a session kept in that tab; no key ever appears in a URL, the browser
+  history or `ps`. Requests must name 127.0.0.1 as their host (no DNS
+  rebinding), and the page's content policy allows no third-party code.
+- **Settings are checked** before they reach the modem: numbers must be
+  numbers (they end up in AT commands), the webhook must be http(s).
+- **Automatic texts are capped** at 30 an hour (auto-replies and forwards), so
+  a flood of texts with spoofed senders can't make the line send hundreds.
+- **What it can't protect:** any program running as your user can read the
+  master token, like any other file of yours. On macOS, other user accounts
+  on the same Mac can open the board's USB serial ports directly. And the
+  board accepts a firmware update from anything that can open its control
+  port (the image is checked with a CRC, not a signature); see `REV-C.md`.
+
 ## Releasing
 
 Push a tag: `git tag v0.3.0 && git push origin v0.3.0`.

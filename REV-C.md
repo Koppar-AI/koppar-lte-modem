@@ -18,6 +18,16 @@ from the design review ([`REVIEW.md`](REVIEW.md#still-open)) are folded in.
   through them to an RP2040 UART, and the firmware can bridge AT commands to the control port. A
   second way in, and AT access while the module's USB is still booting.
 
+## Security
+
+- **Firmware updates should need more than a serial port.** Rev B accepts a
+  new firmware from any program that can open the control port (`fw begin`,
+  `fw w`, `fw commit`, or `bootloader` for the ROM's USB drive); the image is
+  checked with a CRC only. A malicious firmware could present itself as a USB
+  keyboard. Rev C: sign release images (Ed25519, key off the board, public key
+  in the firmware) and verify before copying; or allow updates only while the
+  BOOT button is held, so they need someone at the board.
+
 ## SIM
 
 - **Draw the card on the silkscreen:** outline, cut corner, "contacts down" and an arrow at the

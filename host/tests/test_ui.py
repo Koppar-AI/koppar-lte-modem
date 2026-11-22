@@ -28,11 +28,18 @@ def daemon():
     fake.stop()
 
 
-def call(d, method, path, body=None, token=True, host=None):
+def raw(d, path, headers=None):
+    req = urllib.request.Request(d.base + path, headers={"X-Koppar-Token": d.ui_token, **(headers or {})})
+    return urllib.request.urlopen(req, timeout=5)
+
+
+def call(d, method, path, body=None, token=True, host=None, session=None):
     req = urllib.request.Request(d.base + path, method=method,
                                  data=json.dumps(body).encode() if body is not None else None)
     if token:
         req.add_header("X-Koppar-Token", d.ui_token)
+    if session:
+        req.add_header("X-Koppar-Session", session)
     if body is not None:
         req.add_header("Content-Type", "application/json")
     if host:
@@ -51,6 +58,18 @@ def test_api_needs_the_token_and_the_right_host(daemon):
     assert call(d, "GET", "/api/state", host="evil.example:80")[0] == 421       # DNS rebinding
     status, state = call(d, "GET", "/api/state")
     assert status == 200 and state["modem"] is True
+    # No key is accepted from a URL (history, logs, `ps`).
+    assert call(d, "GET", f"/api/state?token={d.ui_token}", token=False)[0] == 401
+    # A window: one-time launch code (master token only) -> a session of its own.
+    code = call(d, "POST", "/api/launch", {})[1]["launch"]
+    status, r = call(d, "POST", "/api/session", {"launch": code}, token=False)
+    assert status == 200
+    assert call(d, "GET", "/api/state", token=False, session=r["session"])[0] == 200
+    assert call(d, "POST", "/api/session", {"launch": code}, token=False)[0] == 401      # used once
+    assert call(d, "POST", "/api/launch", {}, token=False, session=r["session"])[0] == 403
+    # Settings reach AT commands: a number can't smuggle one in.
+    status, err = call(d, "POST", "/api/settings", {"forward_sms_to": '+447700";AT+CFUN=0;"'})
+    assert status == 400 and "phone number" in err["error"]
 
 
 def test_send_text_from_the_ui(daemon):
@@ -158,6 +177,13 @@ class FakeCallAudio:
         return np.full(3 * self.rate, 0.1, np.float32)
 
 
+def _fast_voicemail(d, after):
+    """Voicemail on, answering after `after` seconds: below what the UI allows (3 s), so
+    written straight into the store."""
+    vm = {**d.store.settings()["voicemail"], "enabled": True, "answer_after": after}
+    d.store._x("INSERT OR REPLACE INTO settings VALUES ('voicemail', ?)", (json.dumps(vm),))
+
+
 def _wait(cond, seconds=3.0):
     t = time.time()
     while time.time() - t < seconds:
@@ -173,7 +199,7 @@ def test_voicemail_answers_greets_and_records(daemon):
     FakeCallAudio.played = []
     d.call_audio_factory = FakeCallAudio
     d.greeting_samples = lambda rate: np.zeros(800, np.float32)
-    d.store.set_settings({"voicemail": {**d.store.settings()["voicemail"], "enabled": True, "answer_after": 0.05}})
+    _fast_voicemail(d, 0.05)
     fake.calls = [(1, 1, 4, "+447700900123")]
     d._poll_calls()                                      # ringing
     d.emit("incoming_call", number="+447700900123")
@@ -185,7 +211,7 @@ def test_voicemail_answers_greets_and_records(daemon):
     assert _wait(lambda: "AT+CHUP" in fake.received)     # and hung up after the message
     status, state = call(d, "GET", "/api/state")
     assert state["voicemail_new"] == 1 and not state["voicemail_busy"]
-    with urllib.request.urlopen(f"{d.base}/api/voicemail/{v['id']}/audio?token={d.ui_token}") as r:
+    with raw(d, f"/api/voicemail/{v['id']}/audio") as r:
         assert r.headers["Content-Type"] == "audio/wav" and r.read(4) == b"RIFF"
     assert call(d, "GET", "/api/state")[1]["voicemail_new"] == 0     # listened to
 
@@ -193,7 +219,7 @@ def test_voicemail_answers_greets_and_records(daemon):
 def test_voicemail_steps_aside_when_you_answer(daemon):
     d, fake = daemon
     d.call_audio_factory = FakeCallAudio
-    d.store.set_settings({"voicemail": {**d.store.settings()["voicemail"], "enabled": True, "answer_after": 0.2}})
+    _fast_voicemail(d, 0.2)
     fake.calls = [(1, 1, 4, "+447700900123")]
     d._poll_calls()
     d.emit("incoming_call", number="+447700900123")
@@ -220,7 +246,7 @@ def test_recordings_play_only_from_the_data_folder(daemon, tmp_path):
     rec.write_bytes(b"RIFF....WAVE")
     cid = d.store.call_started("in", "+447700900123")
     d.store.call_update(cid, recording=str(rec))
-    with urllib.request.urlopen(f"{d.base}/api/calls/{cid}/recording?token={d.ui_token}") as r:
+    with raw(d, f"/api/calls/{cid}/recording") as r:
         assert r.read() == b"RIFF....WAVE"
     outside = tmp_path / "secret.wav"
     outside.write_bytes(b"no")

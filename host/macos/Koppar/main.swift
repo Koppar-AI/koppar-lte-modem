@@ -544,11 +544,29 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
     func show(_ view: String) {
         let safe = view.filter { $0.isLetter || $0.isNumber || "+:_".contains($0) }
         if window == nil {
-            guard let tok = Config.token(),
-                  let url = URL(string: "\(Config.base.absoluteString)/?token=\(tok)&embedded=1#\(safe)") else {
-                Model.shared.note = "The daemon isn't ready yet."
-                return
+            // A one-time launch code (the master token never goes in a URL); the page
+            // swaps it for a session of its own.
+            Task { @MainActor in
+                do {
+                    let r = try await API.call("/api/launch", "POST", [:]) as? [String: Any]
+                    guard let code = r?["launch"] as? String,
+                          let url = URL(string: "\(Config.base.absoluteString)/?launch=\(code)&embedded=1#\(safe)") else {
+                        throw APIError.http("no launch code")
+                    }
+                    self.open(url)
+                } catch {
+                    Model.shared.note = "The daemon isn't ready yet: \(error.localizedDescription)"
+                }
             }
+            return
+        }
+        web?.evaluateJavaScript("location.hash = '#\(safe)'")
+        bringForward()
+    }
+
+    private func open(_ url: URL) {
+        do {
+            if window != nil { return }
             let cfg = WKWebViewConfiguration()
             cfg.websiteDataStore = .nonPersistent()
             let w = WKWebView(frame: .zero, configuration: cfg)
@@ -566,9 +584,11 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
             if !win.setFrameUsingName("KopparMain") { win.center() }
             window = win
             web = w
-        } else {
-            web?.evaluateJavaScript("location.hash = '#\(safe)'")
         }
+        bringForward()
+    }
+
+    private func bringForward() {
         NSApp.setActivationPolicy(.regular)           // in the Dock and Cmd-Tab while the window is open
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -617,15 +637,17 @@ final class MainWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
         return await withCheckedContinuation { c in a.beginSheetModal(for: w) { c.resume(returning: $0) } }
     }
 
-    // Links out of the UI open in the browser, not in the app window.
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        if let url = action.request.url, url.host != "127.0.0.1", action.navigationType == .linkActivated {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
-            return
+    // The window only ever shows the local UI. A link elsewhere opens in the browser,
+    // and only if it's http(s): no file:, custom-scheme or app-opening URLs.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+        guard let url = action.request.url else { return .cancel }
+        if url.scheme == "blob" || (url.scheme == "http" && url.host == "127.0.0.1" && url.port == Config.port) {
+            return .allow
         }
-        decisionHandler(.allow)
+        if action.navigationType == .linkActivated, ["http", "https"].contains(url.scheme ?? "") {
+            NSWorkspace.shared.open(url)
+        }
+        return .cancel
     }
 }
 

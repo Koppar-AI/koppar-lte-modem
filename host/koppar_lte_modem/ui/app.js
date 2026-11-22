@@ -4,30 +4,64 @@
 "use strict";
 (() => {
 
-// ---- token -------------------------------------------------------------------
+// ---- session -------------------------------------------------------------------
+// A window opens with a one-time launch code (?launch=, from the app or
+// `koppar-lte-modem ui`) and swaps it for a session kept in this tab only.
+// No key ever stays in a URL, the history or localStorage.
 
-function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
 const params = new URLSearchParams(location.search);
-let TOKEN = params.get("token") || store("koppar-token") || "";
 const EMBEDDED = params.get("embedded") === "1";
-if (params.get("token")) {
-  store("koppar-token", TOKEN);
-  history.replaceState(null, "", location.pathname + (EMBEDDED ? "?embedded=1" : "") + location.hash);
+const LAUNCH = params.get("launch");
+function ss(k, v) {
+  try {
+    if (v === undefined) return sessionStorage.getItem(k);
+    if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v);
+  } catch (e) { return null; }
+  return null;
 }
+let SESSION = ss("koppar-session") || "";
+if (LAUNCH || params.has("token")) history.replaceState(null, "", location.pathname + (EMBEDDED ? "?embedded=1" : "") + location.hash);
+try { localStorage.removeItem("koppar-token"); } catch (e) { /* older versions kept the master token here */ }
 
 // ---- api ---------------------------------------------------------------------
 
 class ApiError extends Error {}
 async function api(path, opts = {}) {
-  const init = { method: opts.method || "GET", headers: { "X-Koppar-Token": TOKEN } };
+  const init = { method: opts.method || "GET", headers: { "X-Koppar-Session": SESSION } };
   if (opts.body !== undefined) { init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(opts.body); }
   let res;
   try { res = await fetch(path, init); } catch (e) { throw new ApiError("the daemon is not answering"); }
-  if (res.status === 401) { gate(); throw new ApiError("not authorised"); }
+  if (res.status === 401) { SESSION = ""; ss("koppar-session", null); gate(); throw new ApiError("not authorised"); }
   let data = null;
   try { data = await res.json(); } catch (e) { /* empty */ }
   if (!res.ok) throw new ApiError((data && data.error) || `HTTP ${res.status}`);
   return data;
+}
+async function blobOf(path) {
+  const res = await fetch(path, { headers: { "X-Koppar-Session": SESSION } });
+  if (!res.ok) throw new ApiError(res.status === 404 ? "not found" : `HTTP ${res.status}`);
+  return res.blob();
+}
+// A play button that fetches the audio (with the session) and becomes a player.
+function player(path, title) {
+  const btn = h("button", { class: "btn sm", title: title || "Play" }, icon("play"), "Play");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const a = h("audio", { class: "player", controls: true, autoplay: true, title: title || "" });
+      a.src = URL.createObjectURL(await blobOf(path));
+      btn.replaceWith(a);
+    } catch (e) { toast(e.message, true); btn.disabled = false; }
+  });
+  return btn;
+}
+async function download(path, name) {
+  try {
+    const url = URL.createObjectURL(await blobOf(path));
+    const a = h("a", { href: url, download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) { toast(e.message, true); }
 }
 const GET = p => api(p);
 const POST = (p, body = {}) => api(p, { method: "POST", body });
@@ -471,8 +505,7 @@ function calls() {
               h("td", { class: "muted", text: fmtTime(c.started, true) }),
               h("td", { class: missed ? "muted" : "", text: len }),
               h("td", {}, h("div", { class: "row" },
-                c.recording ? h("audio", { class: "player", controls: true, preload: "none", title: "Recording of this call",
-                  src: `/api/calls/${c.id}/recording?token=${encodeURIComponent(TOKEN)}` }) : null,
+                c.recording ? player(`/api/calls/${c.id}/recording`, "Recording of this call") : null,
                 c.number ? h("button", { class: "btn sm ghost", onclick: () => dial(c.number), title: "Call back" }, icon("phone")) : null,
                 c.number ? h("button", { class: "btn sm ghost", onclick: () => go("messages", c.number), title: "Text" }, icon("msg")) : null)));
           }))) : h("div", { class: "empty", text: "No calls yet." }))));
@@ -565,7 +598,7 @@ function voicemail() {
   const after = h("input", { class: "input", type: "number", min: "5", max: "60", value: vm.answer_after ?? 15, style: { width: "110px" }, "aria-label": "Answer after seconds" });
   const maxLen = h("input", { class: "input", type: "number", min: "15", max: "600", value: vm.max_seconds ?? 120, style: { width: "110px" }, "aria-label": "Longest message in seconds" });
   const opNumber = h("input", { class: "input", value: s.voicemail_number || "", placeholder: st.voicemail_number || "found from call forwarding", inputmode: "tel", "aria-label": "Operator voicemail number" });
-  const greetPlayer = h("audio", { class: "player", controls: true, preload: "none", src: `/api/voicemail/greeting?token=${encodeURIComponent(TOKEN)}&v=${Date.now()}` });
+  const greetPlayer = player("/api/voicemail/greeting", "Your greeting");
   return h("div", {},
     h("h1", { text: "Voicemail" }),
     h("p", { class: "lede", text: "Messages people leave you: on this Mac, or with your operator when the Mac or the board is off." }),
@@ -576,8 +609,8 @@ function voicemail() {
           h("td", {}, h("div", { class: "row" }, v.heard ? null : h("span", { class: "dot new", title: "new" }), h("strong", { text: v.name || v.number || "Unknown number" })),
             v.name ? h("div", { class: "faint small mono", text: v.number }) : null,
             h("div", { class: "faint small", text: `${fmtTime(v.time, true)} · ${Math.round(v.seconds)} s` })),
-          h("td", {}, h("audio", { class: "player", controls: true, preload: "none", src: `/api/voicemail/${v.id}/audio?token=${encodeURIComponent(TOKEN)}`,
-            onplay: () => { if (!v.heard) { v.heard = 1; setTimeout(refreshState, 500); } } })),
+          h("td", {}, (() => { const p = player(`/api/voicemail/${v.id}/audio`, "Play this message");
+            p.addEventListener("click", () => { if (!v.heard) { v.heard = 1; setTimeout(refreshState, 800); } }); return p; })()),
           h("td", {}, h("div", { class: "row" },
             v.number && /^\+?\d{3,}$/.test(v.number) ? h("button", { class: "btn sm ghost", title: "Call back", onclick: () => dial(v.number) }, icon("phone")) : null,
             v.number && /^\+?\d{3,}$/.test(v.number) ? h("button", { class: "btn sm ghost", title: "Text", onclick: () => go("messages", v.number) }, icon("msg")) : null,
@@ -616,7 +649,7 @@ function events() {
   const sel = S.events.find(e => e.id === S.evSel);
   return h("div", {},
     h("div", { class: "spread" }, h("div", {}, h("h1", { text: "Events" }), h("p", { class: "lede", text: "Everything the daemon reported, with all of its data. Live." })),
-      h("a", { class: "btn sm", href: `/api/export/events?token=${encodeURIComponent(TOKEN)}`, download: "koppar-events.json" }, "Export JSON")),
+      h("button", { class: "btn sm", onclick: () => download("/api/export/events", "koppar-events.json") }, "Export JSON")),
     h("div", { class: "row wrap", style: { marginBottom: "12px" } },
       h("select", { class: "input", style: { width: "auto" }, "aria-label": "Event type", onchange: async e => { S.evKind = e.target.value; await load("events"); renderView(); } },
         h("option", { value: "", text: "All events" }), [...new Set([...kinds, S.evKind].filter(Boolean))].map(k => h("option", { value: k, text: k, selected: k === S.evKind }))),
@@ -848,13 +881,37 @@ function device() {
 
 // ---- live events -------------------------------------------------------------
 
-let es = null;
-function connect() {
-  if (es) es.close();
-  es = new EventSource("/api/stream?token=" + encodeURIComponent(TOKEN));
-  es.onopen = () => { S.live = true; renderNav(); refreshState(); };
-  es.onerror = () => { S.live = false; renderNav(); };
-  es.onmessage = m => { try { onEvent(JSON.parse(m.data)); } catch (e) { console.error(e); } };
+// The daemon's event stream, read with fetch so the session goes in a header
+// (EventSource can only put it in the URL).
+let streamCtl = null;
+async function connect() {
+  if (streamCtl) streamCtl.abort();
+  const ctl = streamCtl = new AbortController();
+  for (;;) {
+    try {
+      const res = await fetch("/api/stream", { headers: { "X-Koppar-Session": SESSION }, signal: ctl.signal });
+      if (res.status === 401) { gate(); return; }
+      if (!res.ok || !res.body) throw new Error(`stream: HTTP ${res.status}`);
+      S.live = true; renderNav(); refreshState();
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          for (const line of chunk.split("\n")) {
+            if (line.startsWith("data: ")) { try { onEvent(JSON.parse(line.slice(6))); } catch (e) { console.error(e); } }
+          }
+        }
+      }
+    } catch (e) { if (ctl.signal.aborted) return; }
+    S.live = false; renderNav();
+    await new Promise(r => setTimeout(r, 2000));
+  }
 }
 function notifyDesktop(title, body) {
   // Only if the browser already allows it: this page never asks. The daemon
@@ -894,11 +951,11 @@ async function onEvent(ev) {
 // ---- start -------------------------------------------------------------------
 
 function gate() {
-  if (es) es.close();
+  if (streamCtl) streamCtl.abort();
   document.getElementById("app").replaceChildren(h("div", { class: "gate" },
     h("div", { class: "mark", style: { margin: "0 auto 16px", width: "48px", height: "48px" } }, (() => { const s = icon("home"); return s; })()),
-    h("h1", { text: "Open this page from the command line" }),
-    h("p", { class: "muted" }, "For your safety the UI needs a key that only this computer has. Run ", h("code", { text: "koppar-lte-modem ui" }), " to open it."),
+    h("h1", { text: "Open Koppar Phone from the menu bar" }),
+    h("p", { class: "muted" }, "For your safety this page opens only from Koppar Phone in the menu bar, or with ", h("code", { text: "koppar-lte-modem ui" }), "."),
     h("p", { class: "faint small" }, "Start the daemon first if it isn't running: ", h("code", { text: "koppar-lte-modem daemon" }))));
 }
 document.addEventListener("keydown", e => { if (e.key === "Escape" && S.evSel) { S.evSel = null; renderView(); } });
@@ -909,7 +966,13 @@ function fromHash() {
 window.addEventListener("hashchange", () => { const [v, arg] = fromHash(); if (v && (v !== S.view || arg)) go(v, arg); });
 
 (async function start() {
-  if (!TOKEN) return gate();
+  if (LAUNCH) {
+    try {
+      const r = await fetch("/api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ launch: LAUNCH }) });
+      if (r.ok) { SESSION = (await r.json()).session; ss("koppar-session", SESSION); }
+    } catch (e) { /* falls through to the gate */ }
+  }
+  if (!SESSION) return gate();
   const [v, arg] = fromHash();
   if (v) S.view = v;
   if (v === "messages" && arg) S.sel = arg;

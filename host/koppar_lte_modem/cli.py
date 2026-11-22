@@ -340,11 +340,22 @@ def cmd_ui(args, _link):
     from .store import Store
     from .web import ui_url
 
+    import urllib.request
+
     if DaemonLink.connect() is None:
         sys.exit("koppar-lte-modem daemon is not running: start it first (koppar-lte-modem daemon)")
-    url = ui_url(args.port, Store().ui_token())
+    # A one-time launch code, not the master token: URLs end up in browser history.
+    req = urllib.request.Request(f"http://127.0.0.1:{args.port}/api/launch", method="POST", data=b"{}",
+                                 headers={"X-Koppar-Token": Store().ui_token(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            code = json.loads(r.read())["launch"]
+    except OSError as e:
+        sys.exit(f"the daemon's UI isn't answering on port {args.port}: {e}")
+    url = ui_url(args.port, code)
     if args.print:
         print(url)
+        print("(works once, within 60 s)", file=sys.stderr)
     else:
         open_ui(url)
         print(f"opened http://127.0.0.1:{args.port}/")
@@ -486,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("ui", help="open the UI of the running daemon in a browser")
     s.add_argument("--port", type=int, default=8025)
-    s.add_argument("--print", action="store_true", help="print the URL (with its token) instead of opening it")
+    s.add_argument("--print", action="store_true", help="print a one-time URL instead of opening it")
     s.set_defaults(fn=cmd_ui)
 
     sub.add_parser("events", help="print the daemon's events as they happen").set_defaults(fn=cmd_events)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .at import ATError
 from .modem import split_fields, ucs2_decode
-from .store import Store, data_dir
+from .store import Store, data_dir, private_dir
 from . import web
 
 log = logging.getLogger("koppar_lte_modem.daemon")
@@ -71,7 +71,7 @@ class _Recorder:
         mix = np.zeros(n, np.float32)
         mix[:len(up)] += up * 0.5
         mix[:len(down)] += down * 0.5
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(self.path.parent)
         write_wav(str(self.path), mix, self.rate)
         return str(self.path)
 
@@ -97,6 +97,7 @@ class UIMixin:
         self._bridge_thread: threading.Thread | None = None
         self._recorder: _Recorder | None = None
         self._replied: dict[str, float] = {}
+        self._auto_sent: list[float] = []    # times of texts sent by automations (rate limit)
         self._next_scheduled = 0.0
         self.scan_state: dict = {"state": "idle"}
         self.voicemail_number_found: str | None = None
@@ -236,13 +237,22 @@ class UIMixin:
                 self._replied[number] = time.time()
                 self._send_auto(number, ar["text"], "auto-reply")
 
+    AUTO_TEXTS_PER_HOUR = 30     # forwards + auto-replies: a flood of (spoofed) texts can't
+                                 # turn the line into a sender of hundreds of messages
+
     def _send_auto(self, number: str, text: str, why: str) -> None:
+        now = time.time()
+        self._auto_sent = [t for t in self._auto_sent if t > now - 3600]
+        if len(self._auto_sent) >= self.AUTO_TEXTS_PER_HOUR:
+            self.emit("sms_failed", number=number, error="automatic texts paused: 30 in the last hour", by=why)
+            return
+        self._auto_sent.append(now)
         try:
             refs = self._as("daemon", self.modem.send_sms, number, text)
             self.store.add_message("out", number, text, status=why)
             self.emit("sms_sent", number=number, text=text, parts=len(refs), by=why)
-        except ATError as e:
-            self.emit("sms_failed", number=number, error=e.result, by=why)
+        except (ATError, ValueError) as e:
+            self.emit("sms_failed", number=number, error=getattr(e, "result", str(e)), by=why)
 
     def ui_send_sms(self, number: str, text: str) -> dict:
         if not PHONE.match(number):
@@ -379,7 +389,7 @@ class UIMixin:
         with self.sub_lock:
             open_windows = len(self.ui_subscribers)
         if not open_windows and self.ui_server:
-            open_ui(web.ui_url(self.ui_port, self.ui_token, "call"), small=True)
+            open_ui(web.ui_url(self.ui_port, web.new_launch_code(), "call"), small=True)
 
     # ---- network ----------------------------------------------------------------
 
@@ -532,9 +542,7 @@ class VoicemailMixin:
     """Koppar Phone's own voicemail, and the operator's."""
 
     def voicemail_dir(self) -> Path:
-        d = data_dir() / "voicemail"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return private_dir(data_dir() / "voicemail")
 
     # -- the operator's voicemail: its number and its "message waiting" signal --
 
@@ -642,11 +650,13 @@ class VoicemailMixin:
         text = text or vm.get("greeting_text") or ""
         out = self.greeting_path()
         try:
+            # The text goes in on stdin, never as an argument: text starting with "-"
+            # would otherwise be read as an option.
             if sys.platform == "darwin" and shutil.which("say"):
-                subprocess.run(["say", "-o", str(out), "--file-format=WAVE", "--data-format=LEI16@16000", text],
-                               check=True, timeout=60)
+                subprocess.run(["say", "-o", str(out), "--file-format=WAVE", "--data-format=LEI16@16000", "-f", "-"],
+                               input=text.encode(), check=True, timeout=60)
             elif shutil.which("espeak"):
-                subprocess.run(["espeak", "-w", str(out), text], check=True, timeout=60)
+                subprocess.run(["espeak", "-w", str(out), "--stdin"], input=text.encode(), check=True, timeout=60)
             else:
                 return False
             return True

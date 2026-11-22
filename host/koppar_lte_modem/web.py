@@ -1,10 +1,12 @@
 """The daemon's UI: a local web page and its JSON API, on 127.0.0.1 only.
 
-Every /api request needs the token from the data folder (header
-X-Koppar-Token, or ?token= for the event stream and downloads), and the Host
-header must name this server. A web page from anywhere else can reach
-127.0.0.1 but can't read the token, so it can't send texts or place calls
-through it.
+Every /api request needs either the master token from the data folder
+(header X-Koppar-Token: this user's programs, the CLI and the app) or a UI
+session (header X-Koppar-Session). Neither ever appears in a URL: a window
+is opened with a one-time launch code (valid 60 s) that the page swaps for a
+session it keeps in that tab only. The Host header must name this server
+(no DNS rebinding). A web page from anywhere else can reach 127.0.0.1 but
+can't read any of these, so it can't send texts or place calls through it.
 """
 
 from __future__ import annotations
@@ -29,6 +31,27 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app.css": ("app.css", "text/css; charset=utf-8")}
 DEFAULT_PORT = 8025
+MAX_BODY = 1 << 20                 # 1 MB: nothing the UI sends comes close
+LAUNCH_SECONDS = 60
+_launch: dict[str, float] = {}     # one-time launch codes -> expiry
+_launch_lock = threading.Lock()
+
+
+def new_launch_code() -> str:
+    code = secrets.token_urlsafe(32)
+    now = time.time()
+    with _launch_lock:
+        for c, exp in list(_launch.items()):
+            if exp < now:
+                del _launch[c]
+        _launch[code] = now + LAUNCH_SECONDS
+    return code
+
+
+def take_launch_code(code: str) -> bool:
+    with _launch_lock:
+        exp = _launch.pop(code, None)
+    return exp is not None and exp >= time.time()
 
 
 class FileResponse:
@@ -57,6 +80,14 @@ def _need(body: dict, *keys: str) -> list:
     if missing:
         raise ApiError(400, "missing " + ", ".join(missing))
     return [body[k] for k in keys]
+
+
+# ---- sessions ---------------------------------------------------------------------
+
+@route("POST", "/api/launch")
+def _new_launch(d, m, q, b):
+    """Master token only (checked in _dispatch): a one-time code to open a window with."""
+    return {"launch": new_launch_code(), "expires_in": LAUNCH_SECONDS}
 
 
 # ---- state and history --------------------------------------------------------
@@ -338,6 +369,8 @@ def _set_settings(d, m, q, b):
         return d.store.set_settings(b)
     except KeyError as e:
         raise ApiError(400, f"unknown setting {e}")
+    except ValueError as e:
+        raise ApiError(400, str(e))
 
 
 # ---- server -------------------------------------------------------------------------
@@ -377,24 +410,40 @@ class _Handler(BaseHTTPRequestHandler):
         q = {k: v[-1] for k, v in parse_qs(url.query).items()}
         if url.path in STATIC and method == "GET":
             f, ctype = STATIC[url.path]
-            csp = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-                   "connect-src 'self'; media-src 'self'; frame-ancestors 'none'")
+            csp = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                   "connect-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; "
+                   "form-action 'none'; frame-ancestors 'none'")
             return self._send(200, (UI_DIR / f).read_bytes(), ctype, {"Content-Security-Policy": csp})
         if not url.path.startswith("/api/"):
             return self._json(404, {"error": "not found"})
-        tok = self.headers.get("X-Koppar-Token") or q.get("token") or ""
-        if not secrets.compare_digest(tok, self.token):
-            return self._json(401, {"error": "bad or missing token"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0:
+            return self._json(400, {"error": "bad Content-Length"})
+        if n > MAX_BODY:
+            return self._json(413, {"error": "request too large"})
+        body = {}
+        if method in ("POST", "PUT") and n:
+            try:
+                body = json.loads(self.rfile.read(n))
+            except ValueError:
+                return self._json(400, {"error": "bad json"})
+            if not isinstance(body, dict):
+                return self._json(400, {"error": "expected a JSON object"})
+        if url.path == "/api/session" and method == "POST":
+            # The page swaps its one-time launch code for a session of its own.
+            if not take_launch_code(str(body.get("launch", ""))):
+                return self._json(401, {"error": "launch code unknown or expired"})
+            return self._json(200, {"session": self.daemon.store.new_session()})
+        master = secrets.compare_digest(self.headers.get("X-Koppar-Token") or "", self.token)
+        if not master and not self.daemon.store.session_ok(self.headers.get("X-Koppar-Session") or ""):
+            return self._json(401, {"error": "not signed in: open the UI from the app or `koppar-lte-modem ui`"})
+        if url.path == "/api/launch" and not master:
+            return self._json(403, {"error": "launch codes need the master token"})
         if url.path == "/api/stream" and method == "GET":
             return self._stream()
-        body = {}
-        if method in ("POST", "PUT"):
-            n = int(self.headers.get("Content-Length") or 0)
-            if n:
-                try:
-                    body = json.loads(self.rfile.read(n))
-                except ValueError:
-                    return self._json(400, {"error": "bad json"})
         for meth, rx, fn in ROUTES:
             mt = rx.match(url.path)
             if meth == method and mt:
@@ -464,5 +513,7 @@ def serve(daemon, port: int = DEFAULT_PORT, token: str = "") -> _Server:
     return srv
 
 
-def ui_url(port: int, token: str, fragment: str = "") -> str:
-    return f"http://127.0.0.1:{port}/?token={token}" + (f"#{fragment}" if fragment else "")
+def ui_url(port: int, launch: str, fragment: str = "", embedded: bool = False) -> str:
+    """A URL that opens the UI once: `launch` is a one-time code (new_launch_code)."""
+    return (f"http://127.0.0.1:{port}/?launch={launch}" + ("&embedded=1" if embedded else "")
+            + (f"#{fragment}" if fragment else ""))

@@ -36,6 +36,9 @@ permissions:
 env:
   PYTHON_VERSION: "3.12"
   LIBUSB_VERSION: "1.0.29"
+  LIBUSB_SHA256: "5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85"
+  PYINSTALLER_VERSION: "6.22.3"
+  BUILD_VERSION: "1.6.1"
 
 jobs:
   test:
@@ -44,8 +47,10 @@ jobs:
       run:
         working-directory: host
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install -e ".[test]"
@@ -55,21 +60,26 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Version
+        env:
+          RAW_VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          V="${{ github.event.inputs.version || github.ref_name }}"
-          echo "VERSION=${V#v}" >> "$GITHUB_ENV"
+          V="${RAW_VERSION#v}"
+          echo "$V" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+-]{0,40}$' || { echo "bad version: $V"; exit 1; }
+          echo "VERSION=$V" >> "$GITHUB_ENV"
       - name: Build wheel and sdist
         working-directory: host
         run: |
           sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
-          pip install build
+          pip install "build==${BUILD_VERSION}"
           python -m build --outdir ../out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: python
           path: out/*
@@ -87,24 +97,31 @@ jobs:
           - { os: ubuntu-22.04-arm, target: linux-arm64 }
     runs-on: ${{ matrix.os }}
     env:
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      SIGN: ${{ secrets.MACOS_CERT_P12 != '' }}     # a flag only: the secret itself stays in the signing step
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Version
         shell: bash
+        env:
+          RAW_VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          V="${{ github.event.inputs.version || github.ref_name }}"
-          echo "VERSION=${V#v}" >> "$GITHUB_ENV"
+          V="${RAW_VERSION#v}"
+          echo "$V" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+-]{0,40}$' || { echo "bad version: $V"; exit 1; }
+          echo "VERSION=$V" >> "$GITHUB_ENV"
 
       # The EC25's AT port goes through libusb on macOS. Built here rather
       # than taken from Homebrew, whose bottles need the runner's macOS.
       - name: libusb (macOS)
         if: runner.os == 'macOS'
         run: |
-          curl -fsSL "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2" | tar xj
+          curl -fsSL -o libusb.tar.bz2 "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
+          echo "${LIBUSB_SHA256}  libusb.tar.bz2" | shasum -a 256 -c -
+          tar xjf libusb.tar.bz2
           cd "libusb-${LIBUSB_VERSION}"
           MACOSX_DEPLOYMENT_TARGET=12.0 ./configure --prefix="$PWD/out" --disable-static --quiet
           make -j"$(sysctl -n hw.ncpu)" install > /dev/null
@@ -120,15 +137,16 @@ jobs:
         shell: bash
         run: |
           sed -i.bak "s/^version = .*/version = \"$VERSION\"/" pyproject.toml && rm pyproject.toml.bak
-          pip install pyinstaller ".[audio]"
+          pip install "pyinstaller==${PYINSTALLER_VERSION}" ".[audio]"
           PYTHON=python packaging/build-cli.sh
           ./dist/koppar-lte-modem/koppar-lte-modem --help
           mkdir -p ../out
           tar -czf "../out/koppar-lte-modem-${VERSION}-${{ matrix.target }}.tar.gz" -C dist koppar-lte-modem
 
       - name: Signing keychain (macOS, with secrets)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
+        if: runner.os == 'macOS' && env.SIGN == 'true'
         env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
@@ -156,7 +174,7 @@ jobs:
           ditto -c -k --keepParent "build/Koppar Phone.app" "../../out/Koppar-Phone-${VERSION}-${{ matrix.target }}.zip"
 
       - name: Notarize (macOS, with secrets)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
+        if: runner.os == 'macOS' && env.SIGN == 'true'
         working-directory: host/macos
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -169,7 +187,7 @@ jobs:
           xcrun stapler staple "build/Koppar Phone.app"
           rm "$ZIP" && ditto -c -k --keepParent "build/Koppar Phone.app" "$ZIP"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: standalone-${{ matrix.target }}
           path: out/*
@@ -181,7 +199,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           path: out
           merge-multiple: true
@@ -193,5 +211,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9A-Za-z.+-]{1,40}$' || { echo "bad tag"; exit 1; }
           gh release create "$GITHUB_REF_NAME" out/* --verify-tag --generate-notes \
             --title "Koppar Phone ${GITHUB_REF_NAME#v}"

@@ -29,7 +29,7 @@ from .board import Board, BoardError
 from .link import socket_path
 from .daemon_ui import UIMixin, VoicemailMixin
 from .modem import Modem, merge_parts, split_fields
-from .store import Store
+from .store import Store, private_dir
 from .web import DEFAULT_PORT
 from .transport import TransportError, open_at_transport
 
@@ -259,7 +259,7 @@ class Daemon(UIMixin, VoicemailMixin):
     def _serve(self) -> None:
         daemon = self
         path = socket_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(path.parent)
         if path.exists():
             path.unlink()
 

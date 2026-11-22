@@ -7,8 +7,10 @@ this keeps all of it on the computer. KOPPAR_DATA overrides the folder.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS scheduled (
     id INTEGER PRIMARY KEY, number TEXT, text TEXT, due REAL, state TEXT DEFAULT 'pending',
     result TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created REAL, seen REAL);
 CREATE TABLE IF NOT EXISTS voicemails (
     id INTEGER PRIMARY KEY, number TEXT, time TEXT, seconds REAL, path TEXT, heard INTEGER DEFAULT 0,
     starred INTEGER DEFAULT 0);
@@ -65,6 +68,82 @@ def data_dir() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "koppar-lte-modem"
 
 
+def private_dir(d: Path) -> Path:
+    """Create d (and nothing above it) readable by this user only: texts, calls,
+    recordings and voicemail live here."""
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+PHONE_NUMBER = re.compile(r"^\+?[0-9]{3,20}$")
+
+
+def _bool(v) -> bool:
+    if not isinstance(v, bool):
+        raise ValueError("expected true or false")
+    return v
+
+
+def _num(v, lo: float, hi: float) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+        raise ValueError(f"expected a number from {lo:g} to {hi:g}")
+    return v
+
+
+def _text(v, most: int) -> str:
+    if not isinstance(v, str) or len(v) > most:
+        raise ValueError(f"expected text of at most {most} characters")
+    return v
+
+
+def _number_or_empty(v) -> str:
+    v = _text(v, 24).strip()
+    if v and not PHONE_NUMBER.match(v):
+        raise ValueError("expected a phone number: digits, optionally a leading +")
+    return v
+
+
+def _url_or_empty(v) -> str:
+    v = _text(v, 500).strip()
+    if v and not re.match(r"^https?://[^\s]+$", v):
+        raise ValueError("expected an http:// or https:// address")
+    return v
+
+
+def validate_setting(key: str, v):
+    """Settings come from the UI: check every value, because some reach the modem
+    (numbers go into AT commands) or the network (the webhook)."""
+    if key not in DEFAULT_SETTINGS:
+        raise KeyError(key)
+    try:
+        if key in ("popup_on_call", "archive_delete_from_module", "mac_audio"):
+            return _bool(v)
+        if key in ("forward_sms_to", "voicemail_number"):
+            return _number_or_empty(v)
+        if key == "webhook_url":
+            return _url_or_empty(v)
+        if not isinstance(v, dict):
+            raise ValueError("expected an object")
+        if key == "auto_reply":
+            return {"enabled": _bool(v.get("enabled", False)), "text": _text(v.get("text", ""), 480),
+                    "hours": _num(v.get("hours", 6), 0, 720)}
+        if key == "voicemail":
+            greeting = v.get("greeting", "text")
+            if greeting not in ("text", "recorded"):
+                raise ValueError("greeting is text or recorded")
+            return {"enabled": _bool(v.get("enabled", False)), "answer_after": _num(v.get("answer_after", 15), 3, 60),
+                    "max_seconds": _num(v.get("max_seconds", 120), 10, 600), "greeting": greeting,
+                    "greeting_text": _text(v.get("greeting_text", ""), 500)}
+    except ValueError as e:
+        raise ValueError(f"{key}: {e}") from None
+    raise KeyError(key)
+
+
+def _hash(tok: str) -> str:
+    return hashlib.sha256(tok.encode()).hexdigest()
+
+
 def _iso_local() -> str:
     t = time.localtime()
     off = time.strftime("%z", t)
@@ -75,9 +154,10 @@ class Store:
     AT_LOG_KEEP = 20000
     SIGNAL_KEEP_DAYS = 30
 
+    SESSION_DAYS = 30
+
     def __init__(self, path: Path | None = None):
-        d = data_dir()
-        d.mkdir(parents=True, exist_ok=True)
+        d = private_dir(data_dir())
         self.path = path or d / "koppar.db"
         self.db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -85,6 +165,9 @@ class Store:
         with self.lock:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.executescript(SCHEMA)
+        for f in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            if f.exists():
+                os.chmod(f, 0o600)
         self._at_rows = 0
 
     # ---- low level -------------------------------------------------------
@@ -100,13 +183,36 @@ class Store:
     # ---- token for the UI --------------------------------------------------
 
     def ui_token(self) -> str:
+        """The master key, for this user's programs (CLI, app): sent as a header, never in a URL."""
         p = data_dir() / "ui-token"
         if p.exists():
+            os.chmod(p, 0o600)
             return p.read_text().strip()
-        tok = secrets.token_urlsafe(24)
-        p.write_text(tok)
-        os.chmod(p, 0o600)
+        tok = secrets.token_urlsafe(32)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # never readable by others
+        with os.fdopen(fd, "w") as f:
+            f.write(tok)
         return tok
+
+    # ---- UI sessions (one per opened window; only a hash is stored) --------------
+
+    def new_session(self) -> str:
+        tok = secrets.token_urlsafe(32)
+        now = time.time()
+        self._x("INSERT INTO sessions VALUES (?, ?, ?)", (_hash(tok), now, now))
+        self._x("DELETE FROM sessions WHERE seen < ?", (now - self.SESSION_DAYS * 86400,))
+        return tok
+
+    def session_ok(self, tok: str) -> bool:
+        if not tok:
+            return False
+        h, now = _hash(tok), time.time()
+        r = self._rows("SELECT seen FROM sessions WHERE hash = ?", (h,))
+        if not r or r[0]["seen"] < now - self.SESSION_DAYS * 86400:
+            return False
+        if now - r[0]["seen"] > 600:
+            self._x("UPDATE sessions SET seen = ? WHERE hash = ?", (now, h))
+        return True
 
     # ---- settings ----------------------------------------------------------
 
@@ -117,9 +223,8 @@ class Store:
         return out
 
     def set_settings(self, changes: dict) -> dict:
+        changes = {k: validate_setting(k, v) for k, v in changes.items()}
         for k, v in changes.items():
-            if k not in DEFAULT_SETTINGS:
-                raise KeyError(k)
             self._x("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (k, json.dumps(v)))
         return self.settings()

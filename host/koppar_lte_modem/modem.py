@@ -345,6 +345,8 @@ class Modem:
 
     def send_sms(self, number: str, text: str) -> list[int]:
         """Send a text; long texts go as numbered parts. Returns message references."""
+        if not re.fullmatch(r"\+?[0-9]{3,20}", number):
+            raise ValueError(f"not a phone number: {number!r}")     # it goes into an AT command
         parts, ucs2 = sms_parts(text)
         refs = []
         self.at("AT+CMGF=1")                       # the module forgets it on every restart
