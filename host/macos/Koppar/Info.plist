@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Koppar Phone</string>
+    <key>CFBundleDisplayName</key><string>Koppar Phone</string>
+    <key>CFBundleIdentifier</key><string>ai.koppar.lte-modem</string>
+    <key>CFBundleExecutable</key><string>Koppar</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHumanReadableCopyright</key><string>Koppar Phone, for the Koppar LTE modem. CERN-OHL-P-2.0.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Koppar Phone puts your voice on phone calls when you answer with the Mac's audio.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>KopparCLI</key><string>@KOPPAR_CLI@</string>
+</dict>
+</plist>

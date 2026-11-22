@@ -67,6 +67,7 @@ class ATChannel:
         self._final: str | None = None
         self._prompt = False
         self._alive = True
+        self._expect_disconnect = False        # set by AT+QPOWD: the module is about to leave the bus
         self._buf = b""
         self._reader = threading.Thread(target=self._read_loop, name="koppar-at-reader", daemon=True)
         self._reader.start()
@@ -90,6 +91,8 @@ class ATChannel:
             with self._cv:
                 self._pending, self._lines, self._final, self._prompt = cmd, [], None, False
             log.debug("> %s", cmd)
+            if cmd.upper().startswith("AT+QPOWD"):
+                self._expect_disconnect = True
             try:
                 self.transport.write(cmd.encode("ascii", "replace") + b"\r")
                 deadline = time.monotonic() + timeout
@@ -153,7 +156,12 @@ class ATChannel:
             try:
                 data = self.transport.read(0.2)
             except TransportError as e:
-                log.warning("AT port lost: %s", e)
+                if not self._alive:             # close() released the port under the read
+                    return
+                if self._expect_disconnect:
+                    log.debug("AT port gone after power-down: %s", e)
+                else:
+                    log.warning("AT port lost: %s", e)
                 self._alive = False
                 with self._cv:
                     self._cv.notify_all()

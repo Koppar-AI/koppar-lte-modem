@@ -8,10 +8,12 @@ the daemon client's equivalent, so the same code runs in-process or through
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from .at import ATError
+from . import pdu
+from .at import ATClosed, ATError
 
 ATFunc = Callable[..., list]
 
@@ -22,7 +24,14 @@ QDAI_8K = "1,0,0,4,0,0,1,1"     # 2048 kHz clock, 8 kHz
 QDAI_16K = "1,0,0,5,0,1,1,1"    # 4096 kHz clock, 16 kHz (the only clock Quectel allows at 16 kHz)
 
 CLCC_STATES = {0: "active", 1: "held", 2: "dialing", 3: "alerting", 4: "incoming", 5: "waiting"}
+# AT+CMGL / AT+CMGR <stat> in PDU mode.
+SMS_STATES = {0: "REC UNREAD", 1: "REC READ", 2: "STO UNSENT", 3: "STO SENT"}
+SMS_LIST = {"REC UNREAD": 0, "REC READ": 1, "STO UNSENT": 2, "STO SENT": 3, "ALL": 4}
 REG_STATES = {0: "not-registered", 1: "home", 2: "searching", 3: "denied", 4: "unknown", 5: "roaming"}
+
+# +CME ERROR codes AT+CPIN? can return (3GPP TS 27.007), as the module words them with AT+CMEE=2.
+SIM_ERRORS = {"10": "SIM not inserted", "11": "SIM PIN required", "12": "SIM PUK required",
+              "13": "SIM failure", "14": "SIM busy", "15": "SIM wrong"}
 
 # Characters that survive CSCS="IRA" -> GSM 7-bit unchanged. Anything else
 # (accents, emoji, GSM extension characters like [ ] { } ~ ^ \ |) goes as UCS2.
@@ -61,21 +70,36 @@ def ucs2_encode(s: str) -> str:
 def sms_parts(text: str) -> tuple[list[str], bool]:
     """Split text into single-SMS parts; returns (parts, needs_ucs2)."""
     ucs2 = any(ch not in _GSM_SAFE for ch in text)
-    limit, part_limit = (70, 64) if ucs2 else (160, 152)   # leave room for " (1/3)"
-    if len(text) <= limit:
+    limit = 70 if ucs2 else 160
+    # UCS2 limits are in UTF-16 code units: an emoji takes two.
+    size = (lambda s: len(s.encode("utf-16-be")) // 2) if ucs2 else len
+    if size(text) <= limit:
         return [text], ucs2
-    chunks = [text[i:i + part_limit] for i in range(0, len(text), part_limit)]
-    n = len(chunks)
-    return [f"{c} ({i + 1}/{n})" for i, c in enumerate(chunks)], ucs2
+    n = 2
+    while True:                                    # the " (i/n)" suffix grows with n
+        room = limit - len(f" ({n}/{n})")
+        chunks, cur = [], ""
+        for ch in text:                            # never split a character
+            if size(cur + ch) > room:
+                chunks.append(cur)
+                cur = ""
+            cur += ch
+        chunks.append(cur)
+        if len(chunks) <= n:
+            n = len(chunks)
+            return [f"{c} ({i + 1}/{n})" for i, c in enumerate(chunks)], ucs2
+        n = len(chunks)
 
 
 @dataclass
 class SMS:
     index: int
     status: str
-    number: str
-    time: str
+    number: str        # sender, or the sender's name for alphanumeric senders ("MyShop", "Bank")
+    time: str          # ISO 8601 with the network's UTC offset
     text: str
+    parts: list[int] = field(default_factory=list)   # storage indexes of every part, in order
+    concat: tuple[int, int, int] | None = field(default=None, repr=False)   # (ref, total, part) of one part
 
     def as_dict(self):
         return asdict(self)
@@ -93,7 +117,49 @@ class Call:
         return asdict(self)
 
 
+def _part(index: int, stat: int, hexpdu: str) -> SMS:
+    status = SMS_STATES.get(stat, str(stat))
+    try:
+        d = pdu.decode(hexpdu)
+    except pdu.PDUError as e:
+        return SMS(index, status, "", "", f"[undecodable message: {e}]", [index])
+    return SMS(index, status, d.number, d.time, d.text, [index], d.concat)
+
+
+def merge_parts(parts: list[SMS]) -> list[SMS]:
+    """Join the parts of long texts (same sender and reference) into one SMS each,
+    in storage order of their first part. A missing part shows as "[part n missing]"."""
+    slots: list[SMS | tuple] = []                  # a single SMS, or the key of a long text
+    groups: dict[tuple, dict[int, SMS]] = {}
+    for p in parts:
+        if p.concat is None:
+            slots.append(p)
+            continue
+        ref, total, n = p.concat
+        key = (p.number, ref, total)
+        if key not in groups:
+            groups[key] = {}
+            slots.append(key)
+        groups[key][n] = p
+    out = []
+    for slot in slots:
+        if isinstance(slot, SMS):
+            out.append(slot)
+            continue
+        got = groups[slot]
+        total = slot[2]
+        first = got[min(got)]
+        unread = any(p.status == "REC UNREAD" for p in got.values())
+        text = "".join(got[n].text if n in got else f"[part {n} missing]" for n in range(1, total + 1))
+        out.append(SMS(first.index, "REC UNREAD" if unread else first.status, first.number, first.time, text,
+                       [got[n].index for n in sorted(got)]))
+    return out
+
+
 class Modem:
+    ready_wait = 30.0       # seconds _when_ready keeps retrying, and how often
+    ready_poll = 2.0
+
     def __init__(self, at: ATFunc):
         self.at = at
 
@@ -104,6 +170,20 @@ class Modem:
             if line.startswith(prefix + ":"):
                 return line[len(prefix) + 1:].strip()
         return None
+
+    def _when_ready(self, cmd: str, prefix: str) -> str | None:
+        """_value, retried while the module answers ERROR: for the first seconds
+        after it starts, its audio and SIM commands are not ready yet."""
+        deadline = time.monotonic() + self.ready_wait
+        while True:
+            try:
+                return self._value(cmd, prefix)
+            except ATClosed:
+                raise
+            except ATError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(self.ready_poll)
 
     def _first_plain(self, cmd: str) -> str | None:
         for line in self.at(cmd):
@@ -137,7 +217,7 @@ class Modem:
         'reboot_needed' is True if the module must restart to apply them."""
         changed = {}
         want = QDAI_16K if rate == 16000 else QDAI_8K
-        cur = self._value("AT+QDAI?", "+QDAI")
+        cur = self._when_ready("AT+QDAI?", "+QDAI")
         if (cur or "").replace(" ", "") != want:
             self.at(f"AT+QDAI={want}")
             changed["qdai"] = f"{cur} -> {want}"
@@ -190,7 +270,9 @@ class Modem:
         try:
             return self._value("AT+CPIN?", "+CPIN") or "unknown"
         except ATError as e:
-            return e.result.split(":", 1)[-1].strip()
+            # Numeric when AT+CMEE=2 has not been set since the module started.
+            err = e.result.split(":", 1)[-1].strip()
+            return SIM_ERRORS.get(err, err)
 
     def enter_pin(self, pin: str) -> None:
         self.at(f'AT+CPIN="{pin}"', timeout=10)
@@ -214,6 +296,8 @@ class Modem:
                         d[name] = int(val)
                     except ValueError:
                         pass
+                if "sinr" in d:                 # 0-250 in 1/5 dB from -20 dB
+                    d["sinr"] = round(d["sinr"] / 5 - 20, 1)
         except ATError:
             pass
         return d
@@ -262,6 +346,7 @@ class Modem:
         """Send a text; long texts go as numbered parts. Returns message references."""
         parts, ucs2 = sms_parts(text)
         refs = []
+        self.at("AT+CMGF=1")                       # the module forgets it on every restart
         try:
             if ucs2:
                 self.at('AT+CSCS="UCS2"')
@@ -282,49 +367,58 @@ class Modem:
             self.at("AT+CSMP=17,167,0,0")
         return refs
 
-    def _with_ucs2(self, fn):
-        self.at('AT+CSCS="UCS2"')
-        try:
-            return fn()
-        finally:
-            self.at('AT+CSCS="IRA"')
+    # Texts are read as PDUs (see pdu.py): text mode garbles alphanumeric
+    # senders and hides which part of a long text a message is. Each SMS
+    # command sets the mode it needs, because the module forgets AT+CMGF on
+    # every restart.
+
+    def _parts(self, which: str = "ALL") -> list[SMS]:
+        self.at("AT+CMGF=0")
+        lines = self.at(f"AT+CMGL={SMS_LIST[which]}", timeout=20)
+        out: list[SMS] = []
+        head = None
+        for l in lines:
+            if l.startswith("+CMGL:"):
+                head = split_fields(l[6:])
+            elif head is not None:
+                out.append(_part(int(head[0]), int(head[1]), l))
+                head = None
+        return out
+
+    def read_part(self, index: int) -> SMS | None:
+        """One stored message as it is: a long text's parts come one by one (see .concat)."""
+        self.at("AT+CMGF=0")
+        lines = self.at(f"AT+CMGR={index}", timeout=10)
+        for i, l in enumerate(lines):
+            if l.startswith("+CMGR:") and i + 1 < len(lines):
+                return _part(index, int(split_fields(l[6:])[0]), lines[i + 1])
+        return None
 
     def list_sms(self, which: str = "ALL") -> list[SMS]:
-        """which: ALL, REC UNREAD, REC READ, STO SENT, STO UNSENT."""
-        def run():
-            # With CSCS="UCS2", 27.005 says string parameters are UCS2 too;
-            # some firmware wants the plain word anyway.
-            try:
-                lines = self.at(f'AT+CMGL="{ucs2_encode(which)}"', timeout=20)
-            except ATError:
-                lines = self.at(f'AT+CMGL="{which}"', timeout=20)
-            out: list[SMS] = []
-            cur = None
-            for l in lines:
-                if l.startswith("+CMGL:"):
-                    f = split_fields(l[6:])
-                    cur = SMS(int(f[0]), ucs2_decode(f[1]), ucs2_decode(f[2]), f[4] if len(f) > 4 else "", "")
-                    out.append(cur)
-                elif cur is not None:
-                    cur.text += ("\n" if cur.text else "") + ucs2_decode(l)
-            return out
-        return self._with_ucs2(run)
+        """which: ALL, REC UNREAD, REC READ, STO SENT, STO UNSENT. Long texts come back whole."""
+        return merge_parts(self._parts(which))
 
     def read_sms(self, index: int) -> SMS | None:
-        def run():
-            lines = self.at(f"AT+CMGR={index}", timeout=10)
-            msg = None
-            for l in lines:
-                if l.startswith("+CMGR:"):
-                    f = split_fields(l[6:])
-                    msg = SMS(index, ucs2_decode(f[0]), ucs2_decode(f[1]), f[3] if len(f) > 3 else "", "")
-                elif msg is not None:
-                    msg.text += ("\n" if msg.text else "") + ucs2_decode(l)
-            return msg
-        return self._with_ucs2(run)
+        """The message stored at index; for one part of a long text, the whole text."""
+        part = self.read_part(index)
+        if part is None or part.concat is None:
+            return part
+        for msg in self.list_sms():
+            if index in msg.parts:
+                return msg
+        return part
 
     def delete_sms(self, index: int) -> None:
+        """Delete one storage slot (one part of a long text)."""
         self.at(f"AT+CMGD={index}")
+
+    def delete_message(self, index: int) -> list[int]:
+        """Delete the message at index with all of its parts; returns the slots deleted."""
+        msg = self.read_sms(index)
+        slots = msg.parts if msg and msg.parts else [index]
+        for i in slots:
+            self.delete_sms(i)
+        return slots
 
     def delete_all_sms(self) -> None:
         self.at("AT+CMGD=1,4", timeout=25)
@@ -345,13 +439,19 @@ class Modem:
         except ATError:
             self.at("ATH", timeout=10)
 
-    def calls(self) -> list[Call]:
+    def calls(self, voice_only: bool = True) -> list[Call]:
+        """Current calls. On LTE the module also lists its data connection here
+        (<mode> 1, an "incoming", "active" call with no number): skipped unless
+        voice_only is False."""
         out = []
         for l in self.at("AT+CLCC"):
             if l.startswith("+CLCC:"):
                 f = split_fields(l[6:])
+                voice = f[3] == "0"
+                if voice_only and not voice:
+                    continue
                 out.append(Call(int(f[0]), "in" if f[1] == "1" else "out", CLCC_STATES.get(int(f[2]), f[2]),
-                                f[5] if len(f) > 5 else "", f[3] == "0"))
+                                f[5] if len(f) > 5 else "", voice))
         return out
 
     def dtmf(self, digits: str) -> None:

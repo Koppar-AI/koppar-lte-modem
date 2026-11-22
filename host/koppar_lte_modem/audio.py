@@ -178,18 +178,25 @@ def record_file(path: str, seconds: float) -> None:
     write_wav(path, x[:, 0], rate)
 
 
-def bridge(stop: threading.Event | None = None) -> None:
+def bridge(stop: threading.Event | None = None, tap=None) -> None:
     """Headset mode: the computer's default mic into the call, the call into
-    its default speakers. Runs until `stop` is set (or Ctrl-C)."""
+    its default speakers. Runs until `stop` is set (or Ctrl-C). `tap(direction,
+    samples)`, if given, gets a copy of each block: "up" is what you say, "down"
+    what the caller says (float32 mono at the call rate)."""
     sd = _sd()
     inp, out, rate = find_device()
     default_in, default_out = sd.default.device
 
-    def through(indata, outdata, frames, t, status):
-        outdata[:] = indata
+    def through(direction):
+        def cb(indata, outdata, frames, t, status):
+            outdata[:] = indata
+            if tap is not None:
+                tap(direction, indata[:, 0].copy())
+        return cb
 
-    up = sd.Stream(device=(default_in, out), samplerate=rate, channels=1, dtype="float32", callback=through)
-    down = sd.Stream(device=(inp, default_out), samplerate=rate, channels=1, dtype="float32", callback=through)
+    up = sd.Stream(device=(default_in, out), samplerate=rate, channels=1, dtype="float32", callback=through("up"))
+    down = sd.Stream(device=(inp, default_out), samplerate=rate, channels=1, dtype="float32",
+                     callback=through("down"))
     stop = stop or threading.Event()
     with up, down:
         try:

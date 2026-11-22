@@ -16,6 +16,73 @@ def u(s: str) -> str:
     return s.encode("utf-16-be").hex().upper()
 
 
+# ---- SMS-DELIVER builder (3GPP TS 23.040), written from the spec for the tests ----
+
+_GSM7 = ("@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\x1bÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?"
+         "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà")
+_GSM7_EXT = {"\f": 0x0A, "^": 0x14, "{": 0x28, "}": 0x29, "\\": 0x2F, "[": 0x3C, "~": 0x3D, "]": 0x3E,
+             "|": 0x40, "€": 0x65}
+
+
+def gsm7_septets(text: str) -> list[int] | None:
+    out = []
+    for ch in text:
+        if ch in _GSM7_EXT:
+            out += [0x1B, _GSM7_EXT[ch]]
+        elif ch in _GSM7 and ch != "\x1b":
+            out.append(_GSM7.index(ch))
+        else:
+            return None
+    return out
+
+
+def _pack_bits(bits: list[int]) -> bytes:
+    bits = bits + [0] * (-len(bits) % 8)
+    return bytes(sum(b << k for k, b in enumerate(bits[i:i + 8])) for i in range(0, len(bits), 8))
+
+
+def _septet_bits(septets: list[int]) -> list[int]:
+    return [(s >> k) & 1 for s in septets for k in range(7)]
+
+
+def _swap(digits: str) -> bytes:
+    digits += "F" * (len(digits) % 2)
+    return bytes.fromhex("".join(digits[i + 1] + digits[i] for i in range(0, len(digits), 2)))
+
+
+def deliver_pdu(sender: str, text: str, when: str = "261111093000", tz_quarters: int = 4,
+                concat: tuple[int, int, int] | None = None, ref16: bool = False) -> str:
+    """when: YYMMDDhhmmss. concat: (reference, total, part)."""
+    if sender.startswith("+") or sender.isdigit():
+        digits = sender.lstrip("+")
+        oa = bytes([len(digits), 0x91 if sender.startswith("+") else 0x81]) + _swap(digits)
+    else:                                                    # alphanumeric
+        sept = gsm7_septets(sender)
+        packed = _pack_bits(_septet_bits(sept))
+        oa = bytes([-(-len(sept) * 7 // 4), 0xD0]) + packed
+    tz = abs(tz_quarters)
+    scts = _swap(when) + bytes([((tz % 10) << 4) | (tz // 10) | (0x08 if tz_quarters < 0 else 0)])
+    udh = b""
+    if concat:
+        ref, total, part = concat
+        ie = bytes([0x08, 4, ref >> 8, ref & 0xFF, total, part]) if ref16 else bytes([0x00, 3, ref, total, part])
+        udh = bytes([len(ie)]) + ie
+    septets = gsm7_septets(text)
+    if septets is not None:
+        dcs = 0x00
+        skip = -(-len(udh) * 8 // 7)
+        bits = [(b >> k) & 1 for b in udh for k in range(8)]
+        bits += [0] * (skip * 7 - len(bits)) + _septet_bits(septets)
+        ud, udl = _pack_bits(bits), skip + len(septets)
+    else:
+        dcs = 0x08
+        ud = udh + text.encode("utf-16-be")
+        udl = len(ud)
+    fo = 0x04 | (0x40 if udh else 0)
+    body = bytes([fo]) + oa + bytes([0x00, dcs]) + scts + bytes([udl]) + ud
+    return ("00" + body.hex()).upper()                       # "00": no service-centre address
+
+
 class FakeEC25:
     def __init__(self):
         self.master, slave = os.openpty()
@@ -24,10 +91,15 @@ class FakeEC25:
         self.cscs = "IRA"
         self.csmp = "17,167,0,0"
         self.qdai = "3,0,0,4,0,0,1,1"
+        self.cpin = "+CPIN: READY"            # or a final result, e.g. "+CME ERROR: 10"
         self.calls: list[tuple] = []          # (idx, dir, stat, number)
         self.received: list[str] = []         # every command line
         self.sms_sent: list[tuple[str, str, str, str]] = []   # (da, body, cscs, csmp)
-        self.inbox = {3: ("REC UNREAD", "+447700900123", "26/11/11,09:30:00+04", "Hej! Ring mig 👋")}
+        self.cmgf = 0                         # PDU mode, as the module is after every restart
+        self.inbox: dict[int, list] = {       # index -> [stat, pdu]; stat 0 unread, 1 read
+            3: [0, deliver_pdu("+447700900123", "Hej! Ring mig 👋")]}
+        self.clcc_extra: list[str] = []       # e.g. the LTE data bearer: '+CLCC: 1,1,0,1,0,"",128'
+        self.busy = 0                         # answer ERROR to this many audio/SIM queries (starting up)
         self._sms_da = None
         self._buf = b""
         self._stop = False
@@ -50,9 +122,6 @@ class FakeEC25:
 
     def urc(self, line: str):
         self.send(line)
-
-    def _text(self, s: str) -> str:
-        return u(s) if self.cscs == "UCS2" else s
 
     def _run(self):
         import select
@@ -85,7 +154,15 @@ class FakeEC25:
 
     def _command(self, cmd: str):
         c = cmd.upper()
-        simple_ok = ("ATE0", "AT", "AT+CMEE=2", "AT+CMGF=1", "AT+CSDH=0", "AT+CNMI=2,1,0,0,0", "AT+CLIP=1",
+        if c in ("AT+CMGF=0", "AT+CMGF=1"):
+            self.cmgf = int(c[-1])
+            self.send("OK")
+            return
+        if c == "AT+QDAI?" and self.busy > 0:
+            self.busy -= 1
+            self.send("ERROR")
+            return
+        simple_ok = ("ATE0", "AT", "AT+CMEE=2", "AT+CSDH=0", "AT+CNMI=2,1,0,0,0", "AT+CLIP=1",
                      "AT+CRC=0", "AT+CREG=0", "AT+CEREG=0", "AT+CHUP", "ATA", "AT+CNUM")
         if c in simple_ok:
             if c == "AT+CHUP":
@@ -108,7 +185,10 @@ class FakeEC25:
         elif c == "AT+QCCID":
             self.send("+QCCID: 89460123456789012345", "OK")
         elif c == "AT+CPIN?":
-            self.send("+CPIN: READY", "OK")
+            if self.cpin.startswith("+CME ERROR"):
+                self.send(self.cpin)
+            else:
+                self.send(self.cpin, "OK")
         elif c == "AT+CSQ":
             self.send("+CSQ: 20,99", "OK")
         elif c == "AT+QCSQ":
@@ -129,18 +209,25 @@ class FakeEC25:
         elif c == 'AT+QURCCFG="URCPORT"':
             self.send('+QURCCFG: "urcport","usbat"', "OK")
         elif c.startswith("AT+CMGS="):
+            if self.cmgf != 1:                  # what the real module answers in PDU mode
+                self.send("+CMS ERROR: 304")
+                return
             self._sms_da = cmd.split("=", 1)[1].strip('"')
             os.write(self.master, b"\r\n> ")
-        elif c.startswith("AT+CMGL="):
+        elif c.startswith("AT+CMGL=") and self.cmgf == 0:
+            want = int(c.split("=")[1])
             lines = []
-            for i, (st, num, ts, text) in self.inbox.items():
-                lines += [f'+CMGL: {i},"{self._text(st)}","{self._text(num)}",,"{ts}"', self._text(text)]
+            for i, entry in sorted(self.inbox.items()):
+                if want in (4, entry[0]):
+                    lines += [f"+CMGL: {i},{entry[0]},,{len(entry[1]) // 2 - 1}", entry[1]]
+                    entry[0] = max(entry[0], 1)    # listed = read
             self.send(*lines, "OK")
-        elif c.startswith("AT+CMGR="):
+        elif c.startswith("AT+CMGR=") and self.cmgf == 0:
             i = int(c.split("=")[1])
             if i in self.inbox:
-                st, num, ts, text = self.inbox[i]
-                self.send(f'+CMGR: "{self._text(st)}","{self._text(num)}",,"{ts}"', self._text(text), "OK")
+                entry = self.inbox[i]
+                self.send(f"+CMGR: {entry[0]},,{len(entry[1]) // 2 - 1}", entry[1], "OK")
+                entry[0] = max(entry[0], 1)
             else:
                 self.send("+CMS ERROR: 321")
         elif c.startswith("AT+CMGD="):
@@ -150,7 +237,10 @@ class FakeEC25:
             self.calls = [(1, 0, 2, cmd[3:-1])]
             self.send("OK")
         elif c == "AT+CLCC":
-            self.send(*[f'+CLCC: {i},{d},{s},0,0,"{n}",145' for (i, d, s, n) in self.calls], "OK")
+            self.send(*self.clcc_extra, *[f'+CLCC: {i},{d},{s},0,0,"{n}",145' for (i, d, s, n) in self.calls], "OK")
+        elif c == "AT+QPOWD=1":
+            self.send("OK", "POWERED DOWN")
+            threading.Timer(0.1, self.stop).start()  # the module leaves the bus
         elif c == "AT+SLOW":
             # Answers late, with a URC in the middle of the response.
             time.sleep(0.2)

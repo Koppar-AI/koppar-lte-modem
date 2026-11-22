@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Koppar: a K drawn as a stem and three radio waves, on a copper tile. -->
+  <defs>
+    <linearGradient id="copper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E39A6A"/>
+      <stop offset="0.55" stop-color="#B8693E"/>
+      <stop offset="1" stop-color="#8A4626"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#copper)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-width="74">
+    <line x1="330" y1="292" x2="330" y2="732"/>
+    <path d="M 433 409 A 146 146 0 0 1 433 615"/>
+    <path d="M 504 338 A 246 246 0 0 1 504 686"/>
+    <path d="M 575 267 A 346 346 0 0 1 575 757"/>
+  </g>
+</svg>

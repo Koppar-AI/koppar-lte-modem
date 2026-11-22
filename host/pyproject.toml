@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Computer-side software for the Koppar LTE modem: AT commands, SMS, calls, call audio, events"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "CERN-OHL-P-2.0" }
+license = "CERN-OHL-P-2.0"
 dependencies = [
     "pyserial>=3.5",
     "pyusb>=1.2",
@@ -22,4 +22,7 @@ test = ["pytest>=7"]
 koppar-lte-modem = "koppar_lte_modem.cli:main"
 
 [tool.setuptools]
-packages = ["koppar_lte_modem"]
+packages = ["koppar_lte_modem", "koppar_lte_modem.ui"]
+
+[tool.setuptools.package-data]
+"koppar_lte_modem.ui" = ["*.html", "*.js", "*.css"]
